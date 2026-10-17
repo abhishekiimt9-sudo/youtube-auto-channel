@@ -12,8 +12,22 @@ permissions:
 jobs:
   generate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install edge-tts
+
       - name: Generate Hindi YouTube Content
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -22,119 +36,199 @@ jobs:
           import os
           import json
           import urllib.request
-          from datetime import datetime, timezone
+          import urllib.error
+          from pathlib import Path
 
-          api_key = os.environ.get("GEMINI_API_KEY")
+          api_key = os.environ.get("GEMINI_API_KEY", "").strip()
           if not api_key:
-              raise RuntimeError("GEMINI_API_KEY secret is missing.")
+              raise SystemExit("ERROR: GitHub secret GEMINI_API_KEY missing hai.")
 
-          prompt = """
-          Create an original Hindi YouTube content package about
-          fascinating science, technology or real-world mysteries.
-          Return ONLY valid JSON with these keys:
-          topic, short_title, short_script, long_title,
-          long_outline, description, visual_plan, fact_check_notes.
-
-          Rules:
-          - Short script must be natural Hindi for 40-55 seconds.
-          - Long outline should support a 5-8 minute video.
-          - Make it engaging and easy to understand.
-          - Do not invent facts or copy other creators.
-          - Suggest reliable sources for fact-checking.
-          - Include visual ideas for Shorts and long video.
-          """
-
-          url = (
-              "https://generativelanguage.googleapis.com/"
-              "v1beta/models/gemini-2.5-flash:generateContent"
-          )
-
-          payload = {
-              "contents": [
-                  {"parts": [{"text": prompt}]}
-              ],
-              "generationConfig": {
-                  "responseMimeType": "application/json"
-              }
+          base = "https://generativelanguage.googleapis.com/v1beta"
+          headers = {
+              "Content-Type": "application/json",
+              "x-goog-api-key": api_key,
           }
 
-          req = urllib.request.Request(
-              url,
-              data=json.dumps(payload).encode("utf-8"),
-              headers={
-                  "Content-Type": "application/json",
-                  "x-goog-api-key": api_key
-              },
-              method="POST"
+          def api_request(url, data=None):
+              request = urllib.request.Request(
+                  url,
+                  data=json.dumps(data).encode("utf-8") if data is not None else None,
+                  headers=headers,
+                  method="POST" if data is not None else "GET",
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      return json.loads(response.read().decode("utf-8"))
+              except urllib.error.HTTPError as error:
+                  details = error.read().decode("utf-8", errors="replace")
+                  print("Google API HTTP status:", error.code)
+                  print("Google API response:", details[:2500])
+                  raise
+
+          print("Checking models available for this API key...")
+          model_data = api_request(base + "/models")
+          models = model_data.get("models", [])
+
+          candidates = []
+          for model in models:
+              name = model.get("name", "")
+              supported = model.get("supportedGenerationMethods", [])
+              if name.startswith("models/") and "generateContent" in supported:
+                  candidates.append(name)
+
+          preferred = [
+              "models/gemini-3.8-flash",
+              "models/gemini-3.7-flash",
+              "models/gemini-3.6-flash",
+              "models/gemini-3.5-flash",
+              "models/gemini-2.5-flash",
+          ]
+
+          model_name = next(
+              (name for name in preferred if name in candidates),
+              None
           )
 
-          with urllib.request.urlopen(req, timeout=120) as response:
-              data = json.loads(response.read().decode("utf-8"))
+          if not model_name:
+              flash_models = [
+                  name for name in candidates
+                  if "flash" in name.lower() and "image" not in name.lower()
+              ]
+              model_name = flash_models[0] if flash_models else (
+                  candidates[0] if candidates else None
+              )
 
-          candidates = data.get("candidates", [])
-          if not candidates:
-              raise RuntimeError("Gemini returned no content.")
+          if not model_name:
+              print("Models returned by API:")
+              print(json.dumps(model_data, ensure_ascii=False)[:5000])
+              raise SystemExit(
+                  "Koi generateContent model available nahi mila. "
+                  "Upar API response check karo."
+              )
 
-          result = candidates[0]["content"]["parts"][0]["text"]
-          package = json.loads(result)
-          package["generated_at_utc"] = datetime.now(
-              timezone.utc
-          ).isoformat()
+          print("Selected model:", model_name)
 
-          os.makedirs("output", exist_ok=True)
+          prompt = """
+          Tum ek professional Hindi YouTube content writer ho.
+          Science, technology aur real-world mysteries mein se ek interesting,
+          sach par aadharit topic chuno. Fake facts ya fabricated claims mat do.
+          Hindi Devanagari mein original aur engaging content banao.
 
-          with open(
-              "output/content_package.json", "w", encoding="utf-8"
-          ) as f:
-              json.dump(package, f, ensure_ascii=False, indent=2)
+          Sirf valid JSON return karo, Markdown code fences nahi.
+          Is format ko follow karo:
+          {
+            "topic": "video topic",
+            "title": "YouTube title",
+            "short_script": "45-60 second Hindi Shorts narration",
+            "long_title": "long video title",
+            "long_script": "approximately 4-5 minute Hindi narration",
+            "description": "YouTube description in Hindi",
+            "hashtags": ["#Science", "#Hindi", "#Mystery"],
+            "thumbnail_text": "short Hindi thumbnail text"
+          }
 
-          with open(
-              "output/content_package.md", "w", encoding="utf-8"
-          ) as f:
-              f.write("# " + str(package.get("topic", "YouTube Content")) + "\n\n")
-              f.write("## Shorts Title\n" + str(package.get("short_title", "")) + "\n\n")
-              f.write("## Shorts Script\n" + str(package.get("short_script", "")) + "\n\n")
-              f.write("## Long Video Title\n" + str(package.get("long_title", "")) + "\n\n")
-              f.write("## Long Video Outline\n" + str(package.get("long_outline", "")) + "\n\n")
-              f.write("## Description\n" + str(package.get("description", "")) + "\n\n")
-              f.write("## Visual Plan\n" + str(package.get("visual_plan", "")) + "\n\n")
-              f.write("## Fact Check Notes\n" + str(package.get("fact_check_notes", "")) + "\n")
+          Script ki shuruaat strong hook se karo. Facts ko responsibly present
+          karo. Long script ko natural spoken Hindi mein likho.
+          """
 
-          print("Content package generated successfully.")
+          result = api_request(
+              base + "/" + model_name + ":generateContent",
+              {
+                  "contents": [
+                      {
+                          "parts": [
+                              {"text": prompt}
+                          ]
+                      }
+                  ],
+                  "generationConfig": {
+                      "temperature": 0.8,
+                      "responseMimeType": "application/json"
+                  }
+              }
+          )
+
+          parts = (
+              result.get("candidates", [{}])[0]
+              .get("content", {})
+              .get("parts", [])
+          )
+          text = "".join(part.get("text", "") for part in parts).strip()
+
+          if not text:
+              print(json.dumps(result, ensure_ascii=False)[:5000])
+              raise SystemExit("ERROR: Gemini ne script return nahi ki.")
+
+          try:
+              content = json.loads(text)
+          except json.JSONDecodeError:
+              start = text.find("{")
+              end = text.rfind("}")
+              if start < 0 or end <= start:
+                  raise SystemExit("ERROR: Gemini response valid JSON nahi hai.")
+              content = json.loads(text[start:end + 1])
+
+          Path("output").mkdir(exist_ok=True)
+          Path("output/content.json").write_text(
+              json.dumps(content, ensure_ascii=False, indent=2),
+              encoding="utf-8"
+          )
+
+          markdown = f"""# {content.get('title', content.get('topic', 'Hindi YouTube Video'))}
+
+          ## Topic
+          {content.get('topic', '')}
+
+          ## YouTube Shorts Script
+          {content.get('short_script', '')}
+
+          ## Long Video Title
+          {content.get('long_title', '')}
+
+          ## Long Video Script
+          {content.get('long_script', '')}
+
+          ## Description
+          {content.get('description', '')}
+
+          ## Hashtags
+          {' '.join(content.get('hashtags', []))}
+
+          ## Thumbnail Text
+          {content.get('thumbnail_text', '')}
+          """
+          Path("output/content.md").write_text(markdown, encoding="utf-8")
+
+          short_script = content.get("short_script", "").strip()
+          long_script = content.get("long_script", "").strip()
+
+          Path("output/short_script.txt").write_text(
+              short_script, encoding="utf-8"
+          )
+          Path("output/long_script.txt").write_text(
+              long_script, encoding="utf-8"
+          )
+
+          print("Hindi scripts generated successfully.")
           PY
 
       - name: Generate Hindi Female Voice
         run: |
-          python -m pip install --quiet edge-tts
-          python - <<'PY'
-          import asyncio
-          import json
-          import edge_tts
+          mkdir -p output
+          edge-tts \
+            --voice hi-IN-SwaraNeural \
+            --text "$(cat output/short_script.txt)" \
+            --write-media output/short_voice.mp3
 
-          with open(
-              "output/content_package.json",
-              encoding="utf-8"
-          ) as f:
-              package = json.load(f)
+          edge-tts \
+            --voice hi-IN-SwaraNeural \
+            --text "$(cat output/long_script.txt)" \
+            --write-media output/long_voice.mp3
 
-          script = package.get("short_script", "").strip()
-          if not script:
-              raise ValueError("Short script is missing.")
-
-          async def main():
-              voice = edge_tts.Communicate(
-                  script,
-                  voice="hi-IN-SwaraNeural"
-              )
-              await voice.save("output/short_voice.mp3")
-
-          asyncio.run(main())
-          print("Hindi female voice generated successfully.")
-          PY
-
-      - name: Save Generated Content and Audio
+      - name: Save generated files
         uses: actions/upload-artifact@v4
         with:
-          name: youtube-content-package
+          name: youtube-content-${{ github.run_number }}
           path: output/
+          if-no-files-found: error
           retention-days: 7
