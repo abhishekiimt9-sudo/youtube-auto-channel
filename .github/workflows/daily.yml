@@ -46,7 +46,7 @@ jobs:
           headers = {"Content-Type": "application/json",
                      "x-goog-api-key": key}
 
-          def request(url, data=None):
+          def api(url, data=None):
               req = urllib.request.Request(
                   url,
                   data=json.dumps(data).encode("utf-8") if data is not None else None,
@@ -57,56 +57,62 @@ jobs:
                   with urllib.request.urlopen(req, timeout=90) as r:
                       return json.loads(r.read().decode("utf-8"))
               except urllib.error.HTTPError as e:
-                  print("Google API error:", e.code)
-                  print(e.read().decode("utf-8", errors="replace")[:2000])
+                  print("Google API HTTP error:", e.code)
+                  print(e.read().decode("utf-8", errors="replace")[:2500])
                   raise
 
-          models = request(base + "/models").get("models", [])
+          model_data = api(base + "/models")
           candidates = [
-              m["name"] for m in models
+              m["name"] for m in model_data.get("models", [])
               if "generateContent" in m.get("supportedGenerationMethods", [])
           ]
+
           preferred = [
-              "models/gemini-2.5-flash",
-              "models/gemini-2.0-flash"
+              "models/gemini-3.8-flash",
+              "models/gemini-3.7-flash",
+              "models/gemini-3.6-flash",
+              "models/gemini-3.5-flash",
+              "models/gemini-3.5-flash-lite",
+              "models/gemini-3.1-flash-lite"
           ]
+
           model = next((m for m in preferred if m in candidates), None)
           if not model:
               model = next(
                   (m for m in candidates if "flash" in m.lower()),
-                  candidates[0] if candidates else None
+                  None
               )
+
           if not model:
-              raise SystemExit("API key ke liye compatible model nahi mila.")
+              print("Available compatible models:", candidates)
+              raise SystemExit("Koi compatible Gemini Flash model nahi mila.")
 
           print("Selected model:", model)
 
           prompt = """
-          Hindi YouTube channel ke liye ek interesting science, technology ya
-          real-world mystery topic chuno. Facts invent mat karo.
-          Sirf valid JSON, Hindi Devanagari mein return karo:
+          Hindi YouTube channel ke liye science, technology ya real-world
+          mystery par interesting topic chuno. Fake facts invent mat karo.
+          Hindi Devanagari mein narration likho.
+          Sirf valid JSON return karo:
           {
             "topic": "topic",
             "title": "Shorts title",
-            "short_script": "45-60 second narration",
+            "short_script": "45-60 second Hindi narration",
             "long_title": "long video title",
-            "long_script": "4-5 minute narration",
+            "long_script": "4-5 minute Hindi narration",
             "description": "Hindi description",
             "hashtags": ["#Science", "#Hindi", "#Mystery"],
             "thumbnail_text": "short thumbnail text"
           }
           """
 
-          result = request(
-              base + "/" + model + ":generateContent",
-              {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
+          result = api(base + "/" + model + ":generateContent", {
+              "contents": [{"parts": [{"text": prompt}]}],
+              "generationConfig": {
                   "temperature": 0.7,
                   "responseMimeType": "application/json"
-                }
               }
-          )
+          })
 
           parts = result.get("candidates", [{}])[0].get(
               "content", {}).get("parts", [])
@@ -133,23 +139,24 @@ jobs:
               ("short_script", "short_script.txt"),
               ("long_script", "long_script.txt")
           ]:
-              text = content.get(field, "").strip()
-              if not text:
+              value = content.get(field, "").strip()
+              if not value:
                   raise SystemExit("Script missing: " + field)
-              (out / filename).write_text(text, encoding="utf-8")
+              (out / filename).write_text(value, encoding="utf-8")
 
           (out / "content.md").write_text(
               "# " + content.get("title", "") +
+              "\n\n## Topic\n" + content.get("topic", "") +
               "\n\n## Shorts\n" + content["short_script"] +
               "\n\n## Long video\n" + content["long_script"] +
               "\n\n## Description\n" + content.get("description", "") +
               "\n\n## Hashtags\n" + " ".join(content.get("hashtags", [])),
               encoding="utf-8"
           )
-          print("Scripts generated.")
+          print("Scripts generated successfully.")
           PY
 
-      - name: Generate Female Hindi Voice
+      - name: Generate Hindi Female Voice
         run: |
           edge-tts --voice hi-IN-SwaraNeural \
             --file output/short_script.txt \
@@ -170,7 +177,7 @@ jobs:
           folder = Path("output/images")
           folder.mkdir(parents=True, exist_ok=True)
           session = requests.Session()
-          session.headers["User-Agent"] = "EducationalVideoBot/1.0 (GitHub Actions)"
+          session.headers["User-Agent"] = "EducationalVideoProject/1.0"
 
           topics = [
               "space nebula", "Mars planet", "black hole astronomy",
@@ -183,7 +190,7 @@ jobs:
               if saved >= 8:
                   break
               try:
-                  response = session.get(
+                  r = session.get(
                       "https://commons.wikimedia.org/w/api.php",
                       params={
                           "action": "query",
@@ -198,8 +205,8 @@ jobs:
                       },
                       timeout=25
                   )
-                  response.raise_for_status()
-                  pages = response.json().get("query", {}).get("pages", {})
+                  r.raise_for_status()
+                  pages = r.json().get("query", {}).get("pages", {})
 
                   for page in pages.values():
                       if saved >= 8:
@@ -216,8 +223,8 @@ jobs:
                           if len(img.content) < 10000:
                               continue
                           saved += 1
-                          (folder / f"image_{saved:02}.img").write_bytes(img.content)
-                          print("Downloaded:", topic, saved)
+                          (folder / f"image_{saved:02}.jpg").write_bytes(img.content)
+                          print("Image downloaded:", saved, topic)
                       except Exception as e:
                           print("Image skipped:", str(e)[:150])
                   time.sleep(0.3)
@@ -225,64 +232,61 @@ jobs:
                   print("Search skipped:", topic, str(e)[:150])
 
           if saved == 0:
-              raise SystemExit("Images download nahi hui; internet/source check karein.")
-          print("Images downloaded:", saved)
+              raise SystemExit("Images download nahi hui; network/source error.")
+          print("Total images:", saved)
           PY
 
       - name: Render Shorts and Long Video
         run: |
           python - <<'PY'
-          import subprocess, json
+          import subprocess
           from pathlib import Path
 
           out = Path("output")
-          image_files = sorted((out / "images").glob("*.img"))
-          if not image_files:
-              raise SystemExit("Images missing.")
+          images = sorted((out / "images").glob("*.jpg"))
+          if not images:
+              raise SystemExit("Video images missing.")
 
           def run(args):
               subprocess.run(args, check=True)
 
-          def get_duration(path):
-              value = subprocess.check_output([
+          def seconds(path):
+              return float(subprocess.check_output([
                   "ffprobe", "-v", "error",
                   "-show_entries", "format=duration",
                   "-of", "default=noprint_wrappers=1:nokey=1",
                   str(path)
-              ], text=True).strip()
-              return float(value)
+              ], text=True).strip())
 
-          def create_video(label, voice_name, srt_name, width, height, filename):
+          def create(label, voice_name, srt_name, width, height, filename):
               voice = out / voice_name
               srt = out / srt_name
               if not voice.exists() or not srt.exists():
-                  raise SystemExit("Voice/subtitle file missing: " + label)
+                  raise SystemExit("Voice/subtitle missing: " + label)
 
-              duration = get_duration(voice)
-              segments = []
-              selected = image_files[:8]
-
-              for i, img in enumerate(selected):
-                  segment = out / f"{label}_{i:02}.mp4"
+              clips = []
+              for i, img in enumerate(images[:8]):
+                  clip = out / f"{label}_clip_{i:02}.mp4"
                   vf = (
                       f"scale={width}:{height}:force_original_aspect_ratio=increase,"
                       f"crop={width}:{height},"
-                      f"zoompan=z='min(zoom+0.0008,1.12)':d=1:"
+                      f"zoompan=z='min(zoom+0.001,1.12)':"
                       f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-                      f"s={width}x{height}:fps=25,format=yuv420p"
+                      f"d=125:s={width}x{height}:fps=25,"
+                      "format=yuv420p"
                   )
                   run([
                       "ffmpeg", "-y", "-loglevel", "error",
                       "-loop", "1", "-i", str(img),
                       "-vf", vf, "-t", "5",
                       "-an", "-c:v", "libx264", "-preset", "ultrafast",
-                      "-pix_fmt", "yuv420p", str(segment)
+                      "-pix_fmt", "yuv420p", str(clip)
                   ])
-                  segments.append(segment)
+                  clips.append(clip)
 
               concat = out / f"{label}_concat.txt"
               concat.write_text(
-                  "".join(f"file '{p.resolve()}'\n" for p in segments),
+                  "".join(f"file '{p.resolve()}'\n" for p in clips),
                   encoding="utf-8"
               )
               slideshow = out / f"{label}_slideshow.mp4"
@@ -306,23 +310,19 @@ jobs:
                   "-i", str(voice),
                   "-vf", subtitle_filter,
                   "-map", "0:v:0", "-map", "1:a:0",
-                  "-t", str(duration),
+                  "-t", str(seconds(voice)),
                   "-c:v", "libx264", "-preset", "ultrafast",
                   "-crf", "25", "-pix_fmt", "yuv420p",
                   "-c:a", "aac", "-b:a", "128k",
                   "-movflags", "+faststart", str(final)
               ])
-              print("Video created:", final)
+              print("Created:", final)
 
-          create_video(
-              "short", "short_voice.mp3", "short.srt",
-              720, 1280, "youtube_short.mp4"
-          )
-          create_video(
-              "long", "long_voice.mp3", "long.srt",
-              1280, 720, "youtube_long.mp4"
-          )
-          print("Both videos completed.")
+          create("short", "short_voice.mp3", "short.srt",
+                 720, 1280, "youtube_short.mp4")
+          create("long", "long_voice.mp3", "long.srt",
+                 1280, 720, "youtube_long.mp4")
+          print("Video rendering completed.")
           PY
 
       - name: Upload Video Package
