@@ -64,7 +64,7 @@ jobs:
           Write natural Hindi in Devanagari.
           Return only valid JSON with these fields:
           {
-            "topic": "Short English keyword",
+            "topic": "Short English keyword for image generation",
             "title": "Shorts title in Hindi",
             "short_script": "Narration of about 45-60 seconds",
             "long_title": "Long video title in Hindi",
@@ -83,6 +83,9 @@ jobs:
                   break
               except Exception:
                   continue
+
+          if not result:
+              raise SystemExit("Gemini API failed to generate script.")
 
           parts = result.get("candidates", [{}])[0].get("content", {}).get("parts", [])
           raw = "".join(p.get("text", "") for p in parts).strip()
@@ -117,11 +120,9 @@ jobs:
           folder = Path("output/images")
           folder.mkdir(parents=True, exist_ok=True)
 
-          # Browser jaisa dikhne ke liye headers (Isse block nahi hoga)
+          # Browser jaisa headers taaki block na ho
           headers = {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.9',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
               'Referer': 'https://pollinations.ai/'
           }
           session = requests.Session()
@@ -142,11 +143,10 @@ jobs:
           for i, prompt in enumerate(prompts):
               if saved >= 8:
                   break
-              
               success = False
               retries = 0
               
-              while not success and retries < 10: # 10 baar koshish karega
+              while not success and retries < 10:
                   try:
                       encoded_prompt = urllib.parse.quote(prompt)
                       url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=720&nologo=true&model=flux&seed={random.randint(1, 99999)}"
@@ -161,21 +161,14 @@ jobs:
                           success = True
                       else:
                           retries += 1
-                          print(f"Attempt {retries} failed for image {i+1}. Status: {response.status_code}. Waiting 15s...")
-                          time.sleep(15) # 15 second wait karega retry se pehle
-                  except Exception as e:
+                          time.sleep(15)
+                  except Exception:
                       retries += 1
-                      print(f"Error: {str(e)[:50]}. Waiting 15s...")
                       time.sleep(15)
-
-              time.sleep(5) # Har image ke beech 5 second ka gap
-
-          if saved < 4:
-              raise SystemExit("Not enough AI images downloaded. Check connection.")
-          print(f"Successfully downloaded {saved} AI images!")
+              time.sleep(3)
           PY
 
-      - name: Render Smooth Videos with Subtitles
+      - name: Render Professional Video with Smooth Effects
         run: |
           python - <<'PY'
           import subprocess
@@ -199,14 +192,22 @@ jobs:
               srt = out / srt_name
               clips = []
 
-              # Smooth Zoom effect (Ken Burns) taaki freeze na lage
               for i, image in enumerate(images):
                   clip = out / f"{label}_{i:02}.mp4"
+                  
+                  # Zoom In / Zoom Out logic
+                  if i % 2 == 0:
+                      zoom_expr = "z='min(zoom+0.0020,1.4)'" 
+                  else:
+                      zoom_expr = "z='if(eq(on,1),1.4,max(zoom-0.0020,1.0))'"
+                  
+                  # Smooth Fade effect
                   vf = (
                       f"scale={width*2}:{height*2}:force_original_aspect_ratio=increase,"
                       f"crop={width*2}:{height*2},"
-                      "zoompan=z='min(zoom+0.0015,1.4)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-                      f"d=125:s={width}x{height}:fps=25,format=yuv420p"
+                      f"zoompan={zoom_expr}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                      f"d=125:s={width}x{height}:fps=25,format=yuv420p,"
+                      "fade=t=in:st=0:d=0.5,fade=t=out:st=4.5:d=0.5" 
                   )
                   run(["ffmpeg", "-y", "-loglevel", "error", "-loop", "1", "-i", str(image),
                        "-vf", vf, "-t", "5", "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(clip)])
@@ -218,7 +219,7 @@ jobs:
               slideshow = out / f"{label}_slideshow.mp4"
               run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(slideshow)])
 
-              # Hindi Subtitle Fix (Noto Sans Devanagari)
+              # Hindi Subtitles styling
               subtitle_filter = (
                   f"subtitles={srt.as_posix()}:"
                   "force_style='FontName=Noto Sans Devanagari,FontSize=26,"
