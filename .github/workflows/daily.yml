@@ -494,7 +494,7 @@ jobs:
                       "defaultLanguage": "hi"
                   },
                   "status": {
-                      "privacyStatus": "private",
+                      "privacyStatus": "public",
                       "selfDeclaredMadeForKids": False
                   }
               }
@@ -516,5 +516,5 @@ jobs:
                   response["id"]
               )
 
-          print("Both videos uploaded as private.")
+          print("Both videos uploaded as public.")
           PY
