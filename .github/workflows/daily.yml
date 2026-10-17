@@ -35,43 +35,79 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python - <<'PY'
-          import os, json, urllib.request
+          import os
+          import json
+          import urllib.request
+          import urllib.error
           from pathlib import Path
 
           key = os.environ.get("GEMINI_API_KEY", "").strip()
           if not key:
-              raise SystemExit("GEMINI_API_KEY secret missing")
+              raise SystemExit("GEMINI_API_KEY secret missing.")
 
           base = "https://generativelanguage.googleapis.com/v1beta"
-          req = urllib.request.Request(
-              base + "/models",
-              headers={"x-goog-api-key": key}
-          )
-          with urllib.request.urlopen(req, timeout=60) as r:
-              models = json.loads(r.read().decode()).get("models", [])
+          headers = {
+              "Content-Type": "application/json",
+              "x-goog-api-key": key
+          }
 
-          candidates = [
-              m["name"] for m in models
-              if "generateContent" in m.get("supportedGenerationMethods", [])
-              and "flash" in m["name"].lower()
+          def request_api(url, data=None):
+              req = urllib.request.Request(
+                  url,
+                  data=json.dumps(data).encode("utf-8") if data else None,
+                  headers=headers,
+                  method="POST" if data else "GET"
+              )
+              with urllib.request.urlopen(req, timeout=120) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          try:
+              model_data = request_api(base + "/models")
+          except Exception as e:
+              raise SystemExit(
+                  "Could not list Gemini models. Check API key and API access. "
+                  + str(e)
+              )
+
+          available = [
+              m["name"] for m in model_data.get("models", [])
+              if "generateContent" in m.get(
+                  "supportedGenerationMethods", []
+              )
           ]
-          if not candidates:
-              raise SystemExit("No Gemini Flash model available")
 
-          model = candidates[0]
-          print("Gemini model:", model)
+          preferred = [
+              "models/gemini-3.8-flash",
+              "models/gemini-3.5-flash-lite",
+              "models/gemini-3.6-flash"
+          ]
+
+          candidates = [m for m in preferred if m in available]
+          candidates += [
+              m for m in available
+              if "flash" in m.lower() and m not in candidates
+              and "2.5" not in m.lower()
+          ]
+
+          if not candidates:
+              print("Available models:", available)
+              raise SystemExit(
+                  "No supported Gemini Flash model available to this API key."
+              )
 
           prompt = """
-          Create an interesting Hindi YouTube science or real-world mystery topic.
-          Use accurate facts. Write natural Hindi in Devanagari.
-          Return only valid JSON:
+          Create an engaging Hindi YouTube video about science,
+          technology, space or a real-world mystery.
+          Use accurate facts and do not invent scientific claims.
+          Write natural Hindi in Devanagari.
+          Return only valid JSON with these fields:
           {
             "topic": "topic",
-            "title": "Hindi Shorts title",
-            "short_script": "45-60 second narration",
-            "long_title": "Hindi long video title",
-            "long_script": "4-5 minute narration",
-            "description": "Hindi description",
+            "title": "Shorts title in Hindi",
+            "short_script": "Narration of about 45-60 seconds",
+            "long_title": "Long video title in Hindi",
+            "long_script": "Narration of about 4-5 minutes",
+            "description": "Hindi video description",
             "hashtags": ["#Science", "#Hindi", "#Mystery"]
           }
           """
@@ -84,55 +120,88 @@ jobs:
               }
           }
 
-          req = urllib.request.Request(
-              base + "/" + model + ":generateContent",
-              data=json.dumps(payload).encode(),
-              headers={
-                  "Content-Type": "application/json",
-                  "x-goog-api-key": key
-              },
-              method="POST"
-          )
+          result = None
+          selected_model = None
 
-          with urllib.request.urlopen(req, timeout=120) as r:
-              result = json.loads(r.read().decode())
+          for model in candidates:
+              print("Trying Gemini model:", model)
+              try:
+                  result = request_api(
+                      base + "/" + model + ":generateContent",
+                      payload
+                  )
+                  selected_model = model
+                  break
+              except urllib.error.HTTPError as e:
+                  details = e.read().decode("utf-8", errors="replace")
+                  print("Model request failed:", e.code, model)
+                  print(details[:500])
+              except Exception as e:
+                  print("Model failed:", model, str(e)[:300])
+
+          if result is None:
+              raise SystemExit(
+                  "All available Gemini Flash models failed. "
+                  "Check Google AI Studio API access and billing/quota."
+              )
 
           parts = result.get("candidates", [{}])[0].get(
               "content", {}
           ).get("parts", [])
           raw = "".join(p.get("text", "") for p in parts).strip()
-          data = json.loads(raw)
 
-          for field in [
+          if not raw:
+              raise SystemExit(
+                  "Gemini returned no script. Check API response and quota."
+              )
+
+          try:
+              content = json.loads(raw)
+          except json.JSONDecodeError:
+              start = raw.find("{")
+              end = raw.rfind("}")
+              if start < 0 or end <= start:
+                  raise SystemExit("Gemini returned invalid JSON.")
+              content = json.loads(raw[start:end + 1])
+
+          required = [
               "topic", "title", "short_script",
               "long_title", "long_script", "description"
-          ]:
-              if not str(data.get(field, "")).strip():
-                  raise SystemExit("Missing field: " + field)
+          ]
+          for field in required:
+              if not str(content.get(field, "")).strip():
+                  raise SystemExit("Missing content field: " + field)
+
+          if not isinstance(content.get("hashtags", []), list):
+              content["hashtags"] = ["#Science", "#Hindi", "#Mystery"]
 
           out = Path("output")
           out.mkdir(exist_ok=True)
+
           (out / "content.json").write_text(
-              json.dumps(data, ensure_ascii=False, indent=2),
+              json.dumps(content, ensure_ascii=False, indent=2),
               encoding="utf-8"
           )
           (out / "short_script.txt").write_text(
-              data["short_script"], encoding="utf-8"
+              content["short_script"], encoding="utf-8"
           )
           (out / "long_script.txt").write_text(
-              data["long_script"], encoding="utf-8"
+              content["long_script"], encoding="utf-8"
           )
-          print("Hindi scripts generated.")
+
+          print("Scripts generated using:", selected_model)
           PY
 
       - name: Generate Hindi Voice and Subtitles
         run: |
-          edge-tts --voice hi-IN-SwaraNeural \
+          edge-tts \
+            --voice hi-IN-SwaraNeural \
             --file output/short_script.txt \
             --write-media output/short_voice.mp3 \
             --write-subtitles output/short.srt
 
-          edge-tts --voice hi-IN-SwaraNeural \
+          edge-tts \
+            --voice hi-IN-SwaraNeural \
             --file output/long_script.txt \
             --write-media output/long_voice.mp3 \
             --write-subtitles output/long.srt
@@ -140,11 +209,13 @@ jobs:
       - name: Download Science Images
         run: |
           python - <<'PY'
-          import requests, time
+          import requests
+          import time
           from pathlib import Path
 
           folder = Path("output/images")
           folder.mkdir(parents=True, exist_ok=True)
+
           session = requests.Session()
           session.headers["User-Agent"] = "HindiScienceVideo/1.0"
 
@@ -153,13 +224,15 @@ jobs:
               "deep sea ocean", "robot technology", "galaxy stars",
               "scientific laboratory", "telescope astronomy"
           ]
+
           saved = 0
 
           for topic in topics:
               if saved >= 8:
                   break
+
               try:
-                  r = session.get(
+                  response = session.get(
                       "https://commons.wikimedia.org/w/api.php",
                       params={
                           "action": "query",
@@ -174,37 +247,48 @@ jobs:
                       },
                       timeout=30
                   )
-                  r.raise_for_status()
-                  pages = r.json().get("query", {}).get("pages", {})
+                  response.raise_for_status()
+                  pages = response.json().get(
+                      "query", {}
+                  ).get("pages", {})
+
                   for page in pages.values():
                       if saved >= 8:
                           break
+
                       info = page.get("imageinfo", [{}])[0]
                       url = info.get("thumburl") or info.get("url")
                       if not url:
                           continue
+
                       try:
-                          img = session.get(url, timeout=30)
-                          img.raise_for_status()
-                          if not img.headers.get(
+                          image = session.get(url, timeout=30)
+                          image.raise_for_status()
+
+                          if not image.headers.get(
                               "Content-Type", ""
                           ).startswith("image/"):
                               continue
-                          if len(img.content) < 10000:
+
+                          if len(image.content) < 10000:
                               continue
+
                           saved += 1
-                          (folder / f"image_{saved:02}.jpg").write_bytes(
-                              img.content
-                          )
-                          print("Downloaded image", saved)
+                          path = folder / f"image_{saved:02}.jpg"
+                          path.write_bytes(image.content)
+                          print("Downloaded image:", saved)
+
                       except Exception as e:
-                          print("Image skipped:", str(e)[:100])
+                          print("Image skipped:", str(e)[:120])
+
                   time.sleep(0.5)
+
               except Exception as e:
-                  print("Search skipped:", str(e)[:100])
+                  print("Search skipped:", str(e)[:120])
 
           if saved == 0:
-              raise SystemExit("No images downloaded")
+              raise SystemExit("No images downloaded.")
+
           print("Total images:", saved)
           PY
 
@@ -216,47 +300,60 @@ jobs:
 
           out = Path("output")
           images = sorted((out / "images").glob("*.jpg"))
+
           if not images:
-              raise SystemExit("No images found")
+              raise SystemExit("No images found.")
 
           def run(args):
               subprocess.run(args, check=True)
 
           def duration(path):
-              return float(subprocess.check_output([
+              value = subprocess.check_output([
                   "ffprobe", "-v", "error",
                   "-show_entries", "format=duration",
                   "-of", "default=noprint_wrappers=1:nokey=1",
                   str(path)
-              ], text=True).strip())
+              ], text=True).strip()
+              return float(value)
 
-          def render(label, voice_name, srt_name, w, h, filename):
+          def render(label, voice_name, srt_name, width, height, filename):
               voice = out / voice_name
               srt = out / srt_name
+
+              if not voice.exists() or not srt.exists():
+                  raise SystemExit("Voice/subtitles missing: " + label)
+
               clips = []
 
-              for i, img in enumerate(images):
+              for i, image in enumerate(images):
                   clip = out / f"{label}_{i:02}.mp4"
+
                   vf = (
-                      f"scale={w}:{h}:force_original_aspect_ratio=increase,"
-                      f"crop={w}:{h},"
+                      f"scale={width}:{height}:"
+                      "force_original_aspect_ratio=increase,"
+                      f"crop={width}:{height},"
                       "zoompan=z='min(zoom+0.001,1.12)':"
-                      f"x='iw/2-(iw/zoom/2)':"
-                      f"y='ih/2-(ih/zoom/2)':"
-                      f"d=125:s={w}x{h}:fps=25,format=yuv420p"
+                      "x='iw/2-(iw/zoom/2)':"
+                      "y='ih/2-(ih/zoom/2)':"
+                      f"d=125:s={width}x{height}:fps=25,"
+                      "format=yuv420p"
                   )
+
                   run([
                       "ffmpeg", "-y", "-loglevel", "error",
-                      "-loop", "1", "-i", str(img),
-                      "-vf", vf, "-t", "5", "-an",
-                      "-c:v", "libx264", "-preset", "ultrafast",
+                      "-loop", "1", "-i", str(image),
+                      "-vf", vf, "-t", "5",
+                      "-an", "-c:v", "libx264",
+                      "-preset", "ultrafast",
                       "-pix_fmt", "yuv420p", str(clip)
                   ])
                   clips.append(clip)
 
               concat = out / f"{label}_concat.txt"
               concat.write_text(
-                  "".join(f"file '{p.resolve()}'\n" for p in clips),
+                  "".join(
+                      f"file '{p.resolve()}'\n" for p in clips
+                  ),
                   encoding="utf-8"
               )
 
@@ -275,6 +372,7 @@ jobs:
               )
 
               final = out / filename
+
               run([
                   "ffmpeg", "-y", "-loglevel", "error",
                   "-stream_loop", "-1", "-i", str(slideshow),
@@ -287,17 +385,23 @@ jobs:
                   "-c:a", "aac", "-b:a", "128k",
                   "-movflags", "+faststart", str(final)
               ])
-              print("Created:", final)
+
+              if not final.exists() or final.stat().st_size == 0:
+                  raise SystemExit("Video creation failed: " + filename)
+
+              print("Created:", filename)
 
           render(
               "short", "short_voice.mp3", "short.srt",
               720, 1280, "youtube_short.mp4"
           )
+
           render(
               "long", "long_voice.mp3", "long.srt",
               1280, 720, "youtube_long.mp4"
           )
-          print("Videos rendered.")
+
+          print("Both videos rendered successfully.")
           PY
 
       - name: Save Video Package
@@ -315,7 +419,8 @@ jobs:
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
           python - <<'PY'
-          import os, json
+          import os
+          import json
           from pathlib import Path
           from google.oauth2.credentials import Credentials
           from google.auth.transport.requests import Request
@@ -338,7 +443,14 @@ jobs:
               client_secret=os.environ["YOUTUBE_CLIENT_SECRET"].strip(),
               scopes=["https://www.googleapis.com/auth/youtube.upload"]
           )
-          credentials.refresh(Request())
+
+          try:
+              credentials.refresh(Request())
+          except Exception as e:
+              raise SystemExit(
+                  "YouTube authorization failed. Refresh token may have expired. "
+                  + str(e)
+              )
 
           youtube = build(
               "youtube", "v3",
@@ -349,6 +461,7 @@ jobs:
           content = json.loads(
               Path("output/content.json").read_text(encoding="utf-8")
           )
+
           description = (
               content.get("description", "") + "\n\n" +
               " ".join(content.get("hashtags", []))
@@ -369,6 +482,7 @@ jobs:
 
           for filename, title, desc in videos:
               path = Path(filename)
+
               if not path.is_file():
                   raise SystemExit("Video missing: " + filename)
 
@@ -397,7 +511,10 @@ jobs:
                   media_body=media
               ).execute()
 
-              print("Uploaded video ID:", response["id"])
+              print(
+                  "Upload successful. Video ID:",
+                  response["id"]
+              )
 
-          print("Both videos uploaded privately.")
+          print("Both videos uploaded as private.")
           PY
