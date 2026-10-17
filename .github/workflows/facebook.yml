@@ -1,0 +1,55 @@
+name: Facebook Auto Post
+
+on:
+  workflow_run:
+    workflows: ["daily"]        # ⚠️ Yahan apne daily.yml wale 'name:' ko exact match karo
+    types: [completed]
+  workflow_dispatch:            # Manual test ke liye
+
+jobs:
+  post-to-facebook:
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download YouTube package artifact
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./package
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Find video + caption
+        id: find
+        run: |
+          VIDEO=$(find ./package -type f \( -iname "*.mp4" -o -iname "*.mov" \) | head -n1)
+          CAPTION_FILE=$(find ./package -type f \( -iname "*caption*" -o -iname "*description*" \) | head -n1)
+          
+          if [ -n "$VIDEO" ]; then
+            echo "video=$VIDEO" >> $GITHUB_OUTPUT
+          else
+            echo "No video found in artifact!"
+          fi
+          
+          if [ -n "$CAPTION_FILE" ]; then
+            echo "caption<<EOF" >> $GITHUB_OUTPUT
+            cat "$CAPTION_FILE" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "caption=Auto uploaded from YouTube channel" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload video to Facebook Page
+        if: steps.find.outputs.video != ''
+        env:
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+        run: |
+          curl -X POST "https://graph.facebook.com/v21.0/${FB_PAGE_ID}/videos" \
+            -F "source=@${{ steps.find.outputs.video }}" \
+            -F "description=${{ steps.find.outputs.caption }}" \
+            -F "access_token=${FB_PAGE_ACCESS_TOKEN}" \
+            --fail-with-body
