@@ -1,3 +1,4 @@
+
 name: Daily YouTube Script
 
 on:
@@ -13,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Generate original Hindi YouTube content
+      - name: Generate Hindi YouTube Content
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -23,34 +24,29 @@ jobs:
           import urllib.request
           from datetime import datetime, timezone
 
-          prompt = """
-          Create one original Hindi YouTube content package about
-          fascinating science, technology, or real-world mysteries.
+          api_key = os.environ.get("GEMINI_API_KEY")
+          if not api_key:
+              raise RuntimeError("GEMINI_API_KEY secret is missing.")
 
+          prompt = """
+          Create an original Hindi YouTube content package about
+          fascinating science, technology or real-world mysteries.
           Return ONLY valid JSON with these keys:
           topic, short_title, short_script, long_title,
           long_outline, description, visual_plan, fact_check_notes.
 
-          Requirements:
-          - Short script: natural Hindi, 40-55 seconds.
-          - Long outline: enough material for a 5-8 minute video.
-          - Make content engaging, original and easy to understand.
-          - Do not invent facts or present rumours as confirmed facts.
-          - Suggest reliable sources to verify factual claims.
-          - Include visual suggestions for both formats.
-          - Avoid copying existing creators' scripts.
+          Rules:
+          - Short script must be natural Hindi for 40-55 seconds.
+          - Long outline should support a 5-8 minute video.
+          - Make it engaging and easy to understand.
+          - Do not invent facts or copy other creators.
+          - Suggest reliable sources for fact-checking.
+          - Include visual ideas for Shorts and long video.
           """
-
-          api_key = os.environ.get("GEMINI_API_KEY")
-
-          if not api_key:
-              raise RuntimeError(
-                  "GEMINI_API_KEY secret is missing from GitHub."
-              )
 
           url = (
               "https://generativelanguage.googleapis.com/"
-              "v1beta/models/gemini-3.8-flash:generateContent"
+              "v1beta/models/gemini-2.5-flash:generateContent"
           )
 
           payload = {
@@ -62,7 +58,7 @@ jobs:
               }
           }
 
-          request = urllib.request.Request(
+          req = urllib.request.Request(
               url,
               data=json.dumps(payload).encode("utf-8"),
               headers={
@@ -72,18 +68,12 @@ jobs:
               method="POST"
           )
 
-          try:
-              with urllib.request.urlopen(request, timeout=120) as response:
-                  data = json.loads(response.read().decode("utf-8"))
-          except Exception as error:
-              print("Gemini API request failed:", str(error))
-              raise
+          with urllib.request.urlopen(req, timeout=120) as response:
+              data = json.loads(response.read().decode("utf-8"))
 
           candidates = data.get("candidates", [])
           if not candidates:
-              raise RuntimeError(
-                  "Gemini returned no content. Check the API response."
-              )
+              raise RuntimeError("Gemini returned no content.")
 
           result = candidates[0]["content"]["parts"][0]["text"]
           package = json.loads(result)
@@ -95,33 +85,54 @@ jobs:
 
           with open(
               "output/content_package.json", "w", encoding="utf-8"
-          ) as file:
-              json.dump(package, file, ensure_ascii=False, indent=2)
+          ) as f:
+              json.dump(package, f, ensure_ascii=False, indent=2)
 
           with open(
               "output/content_package.md", "w", encoding="utf-8"
-          ) as file:
-              file.write("# " + str(package.get("topic", "YouTube Content")) + "\n\n")
-              file.write("## Short Video Title\n")
-              file.write(str(package.get("short_title", "")) + "\n\n")
-              file.write("## Short Script\n")
-              file.write(str(package.get("short_script", "")) + "\n\n")
-              file.write("## Long Video Title\n")
-              file.write(str(package.get("long_title", "")) + "\n\n")
-              file.write("## Long Video Outline\n")
-              file.write(str(package.get("long_outline", "")) + "\n\n")
-              file.write("## Description\n")
-              file.write(str(package.get("description", "")) + "\n\n")
-              file.write("## Visual Plan\n")
-              file.write(str(package.get("visual_plan", "")) + "\n\n")
-              file.write("## Fact Check Notes\n")
-              file.write(str(package.get("fact_check_notes", "")) + "\n")
+          ) as f:
+              f.write("# " + str(package.get("topic", "YouTube Content")) + "\n\n")
+              f.write("## Shorts Title\n" + str(package.get("short_title", "")) + "\n\n")
+              f.write("## Shorts Script\n" + str(package.get("short_script", "")) + "\n\n")
+              f.write("## Long Video Title\n" + str(package.get("long_title", "")) + "\n\n")
+              f.write("## Long Video Outline\n" + str(package.get("long_outline", "")) + "\n\n")
+              f.write("## Description\n" + str(package.get("description", "")) + "\n\n")
+              f.write("## Visual Plan\n" + str(package.get("visual_plan", "")) + "\n\n")
+              f.write("## Fact Check Notes\n" + str(package.get("fact_check_notes", "")) + "\n")
 
-          print("SUCCESS: YouTube content package generated.")
-
+          print("Content package generated successfully.")
           PY
 
-      - name: Save generated content
+      - name: Generate Hindi Female Voice
+        run: |
+          python -m pip install --quiet edge-tts
+          python - <<'PY'
+          import asyncio
+          import json
+          import edge_tts
+
+          with open(
+              "output/content_package.json",
+              encoding="utf-8"
+          ) as f:
+              package = json.load(f)
+
+          script = package.get("short_script", "").strip()
+          if not script:
+              raise ValueError("Short script is missing.")
+
+          async def main():
+              voice = edge_tts.Communicate(
+                  script,
+                  voice="hi-IN-SwaraNeural"
+              )
+              await voice.save("output/short_voice.mp3")
+
+          asyncio.run(main())
+          print("Hindi female voice generated successfully.")
+          PY
+
+      - name: Save Generated Content and Audio
         uses: actions/upload-artifact@v4
         with:
           name: youtube-content-package
