@@ -119,49 +119,84 @@ jobs:
           edge-tts --voice hi-IN-SwaraNeural --file output/short_script.txt --write-media output/short_voice.mp3 --write-subtitles output/short.srt
           edge-tts --voice hi-IN-SwaraNeural --file output/long_script.txt --write-media output/long_voice.mp3 --write-subtitles output/long.srt
 
-      - name: Generate AI Cartoon Images
+      - name: Download Cartoon Images from Wikimedia
         run: |
           python - <<'PY'
-          import urllib.request
-          import urllib.parse
+          import requests
           import time
           from pathlib import Path
-          import random
 
           folder = Path("output/images")
           folder.mkdir(parents=True, exist_ok=True)
 
-          # 8 alag alag cartoon prompts
-          prompts = [
-              "cute 3d cartoon animal in magical forest",
-              "funny cartoon kids playing, pixar style",
-              "beautiful cartoon village background",
-              "cute cartoon child smiling, 3d animation",
-              "magical cartoon landscape with rainbow",
-              "funny cartoon rabbit, kids story",
-              "cartoon cute animals talking, sunny day",
-              "happy cartoon ending scene, colorful"
+          session = requests.Session()
+          session.headers["User-Agent"] = "HindiCartoonVideo/1.0"
+
+          # Cartoon aur kids story se judi images search karega
+          topics = [
+              "cartoon illustration", "fairy tale illustration", 
+              "kids story cartoon", "animated landscape", 
+              "comic cartoon art", "cartoon animals", 
+              "cartoon village", "children book illustration"
           ]
 
           saved = 0
-          for prompt in prompts:
+
+          for topic in topics:
+              if saved >= 8:
+                  break
+
               try:
-                  encoded_prompt = urllib.parse.quote(prompt)
-                  url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=720&nologo=true&seed={random.randint(1, 99999)}"
-                  req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                  with urllib.request.urlopen(req, timeout=60) as response:
-                      image_data = response.read()
-                      if len(image_data) > 10000:
+                  response = session.get(
+                      "https://commons.wikimedia.org/w/api.php",
+                      params={
+                          "action": "query",
+                          "generator": "search",
+                          "gsrsearch": topic + " filetype:bitmap",
+                          "gsrnamespace": 6,
+                          "gsrlimit": 5,
+                          "prop": "imageinfo",
+                          "iiprop": "url",
+                          "iiurlwidth": 1280,
+                          "format": "json"
+                      },
+                      timeout=30
+                  )
+                  response.raise_for_status()
+                  pages = response.json().get("query", {}).get("pages", {})
+
+                  for page in pages.values():
+                      if saved >= 8:
+                          break
+
+                      info = page.get("imageinfo", [{}])[0]
+                      url = info.get("thumburl") or info.get("url")
+                      if not url:
+                          continue
+
+                      try:
+                          image = session.get(url, timeout=30)
+                          image.raise_for_status()
+
+                          if not image.headers.get("Content-Type", "").startswith("image/"):
+                              continue
+
+                          if len(image.content) < 10000:
+                              continue
+
                           saved += 1
                           path = folder / f"image_{saved:02}.jpg"
-                          path.write_bytes(image_data)
-                          print(f"Downloaded Image {saved}")
-                  time.sleep(2) 
-              except Exception as e:
-                  print("Image failed:", str(e)[:100])
+                          path.write_bytes(image.content)
+                          print("Downloaded image:", saved)
 
-          if saved < 4:
-              raise SystemExit("Not enough images downloaded.")
+                      except Exception as e:
+                          print("Image skipped:", str(e)[:120])
+                  time.sleep(0.5)
+              except Exception as e:
+                  print("Search skipped:", str(e)[:120])
+
+          if saved == 0:
+              raise SystemExit("No images downloaded.")
           PY
 
       - name: Render Smooth Videos with Subtitles
@@ -223,7 +258,6 @@ jobs:
 
           render("short", "short_voice.mp3", "short.srt", 720, 1280, "youtube_short.mp4")
           render("long", "long_voice.mp3", "long.srt", 1280, 720, "youtube_long.mp4")
-          print("Videos Rendered Successfully.")
           PY
 
       - name: Upload Videos to YouTube
