@@ -1,5 +1,5 @@
 
-name: Daily YouTube Script
+name: Daily YouTube Video Generator
 
 on:
   workflow_dispatch:
@@ -12,10 +12,10 @@ permissions:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -23,212 +23,312 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install tools
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
           python -m pip install --upgrade pip
-          pip install edge-tts
+          pip install edge-tts requests
 
-      - name: Generate Hindi YouTube Content
+      - name: Generate Hindi Scripts
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python - <<'PY'
-          import os
-          import json
-          import urllib.request
-          import urllib.error
+          import os, json, urllib.request, urllib.error
           from pathlib import Path
 
-          api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-          if not api_key:
-              raise SystemExit("ERROR: GitHub secret GEMINI_API_KEY missing hai.")
+          key = os.environ.get("GEMINI_API_KEY", "").strip()
+          if not key:
+              raise SystemExit("GEMINI_API_KEY secret missing hai.")
 
           base = "https://generativelanguage.googleapis.com/v1beta"
-          headers = {
-              "Content-Type": "application/json",
-              "x-goog-api-key": api_key,
-          }
+          headers = {"Content-Type": "application/json",
+                     "x-goog-api-key": key}
 
-          def api_request(url, data=None):
-              request = urllib.request.Request(
+          def request(url, data=None):
+              req = urllib.request.Request(
                   url,
                   data=json.dumps(data).encode("utf-8") if data is not None else None,
                   headers=headers,
-                  method="POST" if data is not None else "GET",
+                  method="POST" if data is not None else "GET"
               )
               try:
-                  with urllib.request.urlopen(request, timeout=60) as response:
-                      return json.loads(response.read().decode("utf-8"))
-              except urllib.error.HTTPError as error:
-                  details = error.read().decode("utf-8", errors="replace")
-                  print("Google API HTTP status:", error.code)
-                  print("Google API response:", details[:2500])
+                  with urllib.request.urlopen(req, timeout=90) as r:
+                      return json.loads(r.read().decode("utf-8"))
+              except urllib.error.HTTPError as e:
+                  print("Google API error:", e.code)
+                  print(e.read().decode("utf-8", errors="replace")[:2000])
                   raise
 
-          print("Checking models available for this API key...")
-          model_data = api_request(base + "/models")
-          models = model_data.get("models", [])
-
-          candidates = []
-          for model in models:
-              name = model.get("name", "")
-              supported = model.get("supportedGenerationMethods", [])
-              if name.startswith("models/") and "generateContent" in supported:
-                  candidates.append(name)
-
-          preferred = [
-              "models/gemini-3.8-flash",
-              "models/gemini-3.7-flash",
-              "models/gemini-3.6-flash",
-              "models/gemini-3.5-flash",
-              "models/gemini-2.5-flash",
+          models = request(base + "/models").get("models", [])
+          candidates = [
+              m["name"] for m in models
+              if "generateContent" in m.get("supportedGenerationMethods", [])
           ]
-
-          model_name = next(
-              (name for name in preferred if name in candidates),
-              None
-          )
-
-          if not model_name:
-              flash_models = [
-                  name for name in candidates
-                  if "flash" in name.lower() and "image" not in name.lower()
-              ]
-              model_name = flash_models[0] if flash_models else (
+          preferred = [
+              "models/gemini-2.5-flash",
+              "models/gemini-2.0-flash"
+          ]
+          model = next((m for m in preferred if m in candidates), None)
+          if not model:
+              model = next(
+                  (m for m in candidates if "flash" in m.lower()),
                   candidates[0] if candidates else None
               )
+          if not model:
+              raise SystemExit("API key ke liye compatible model nahi mila.")
 
-          if not model_name:
-              print("Models returned by API:")
-              print(json.dumps(model_data, ensure_ascii=False)[:5000])
-              raise SystemExit(
-                  "Koi generateContent model available nahi mila. "
-                  "Upar API response check karo."
-              )
-
-          print("Selected model:", model_name)
+          print("Selected model:", model)
 
           prompt = """
-          Tum ek professional Hindi YouTube content writer ho.
-          Science, technology aur real-world mysteries mein se ek interesting,
-          sach par aadharit topic chuno. Fake facts ya fabricated claims mat do.
-          Hindi Devanagari mein original aur engaging content banao.
-
-          Sirf valid JSON return karo, Markdown code fences nahi.
-          Is format ko follow karo:
+          Hindi YouTube channel ke liye ek interesting science, technology ya
+          real-world mystery topic chuno. Facts invent mat karo.
+          Sirf valid JSON, Hindi Devanagari mein return karo:
           {
-            "topic": "video topic",
-            "title": "YouTube title",
-            "short_script": "45-60 second Hindi Shorts narration",
+            "topic": "topic",
+            "title": "Shorts title",
+            "short_script": "45-60 second narration",
             "long_title": "long video title",
-            "long_script": "approximately 4-5 minute Hindi narration",
-            "description": "YouTube description in Hindi",
+            "long_script": "4-5 minute narration",
+            "description": "Hindi description",
             "hashtags": ["#Science", "#Hindi", "#Mystery"],
-            "thumbnail_text": "short Hindi thumbnail text"
+            "thumbnail_text": "short thumbnail text"
           }
-
-          Script ki shuruaat strong hook se karo. Facts ko responsibly present
-          karo. Long script ko natural spoken Hindi mein likho.
           """
 
-          result = api_request(
-              base + "/" + model_name + ":generateContent",
+          result = request(
+              base + "/" + model + ":generateContent",
               {
-                  "contents": [
-                      {
-                          "parts": [
-                              {"text": prompt}
-                          ]
-                      }
-                  ],
-                  "generationConfig": {
-                      "temperature": 0.8,
-                      "responseMimeType": "application/json"
-                  }
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                  "temperature": 0.7,
+                  "responseMimeType": "application/json"
+                }
               }
           )
 
-          parts = (
-              result.get("candidates", [{}])[0]
-              .get("content", {})
-              .get("parts", [])
-          )
-          text = "".join(part.get("text", "") for part in parts).strip()
-
-          if not text:
-              print(json.dumps(result, ensure_ascii=False)[:5000])
-              raise SystemExit("ERROR: Gemini ne script return nahi ki.")
+          parts = result.get("candidates", [{}])[0].get(
+              "content", {}).get("parts", [])
+          raw = "".join(p.get("text", "") for p in parts).strip()
+          if not raw:
+              raise SystemExit("Gemini ne content return nahi kiya.")
 
           try:
-              content = json.loads(text)
+              content = json.loads(raw)
           except json.JSONDecodeError:
-              start = text.find("{")
-              end = text.rfind("}")
+              start, end = raw.find("{"), raw.rfind("}")
               if start < 0 or end <= start:
-                  raise SystemExit("ERROR: Gemini response valid JSON nahi hai.")
-              content = json.loads(text[start:end + 1])
+                  raise SystemExit("Gemini response valid JSON nahi hai.")
+              content = json.loads(raw[start:end + 1])
 
-          Path("output").mkdir(exist_ok=True)
-          Path("output/content.json").write_text(
+          out = Path("output")
+          out.mkdir(exist_ok=True)
+          (out / "content.json").write_text(
               json.dumps(content, ensure_ascii=False, indent=2),
               encoding="utf-8"
           )
 
-          markdown = f"""# {content.get('title', content.get('topic', 'Hindi YouTube Video'))}
+          for field, filename in [
+              ("short_script", "short_script.txt"),
+              ("long_script", "long_script.txt")
+          ]:
+              text = content.get(field, "").strip()
+              if not text:
+                  raise SystemExit("Script missing: " + field)
+              (out / filename).write_text(text, encoding="utf-8")
 
-          ## Topic
-          {content.get('topic', '')}
-
-          ## YouTube Shorts Script
-          {content.get('short_script', '')}
-
-          ## Long Video Title
-          {content.get('long_title', '')}
-
-          ## Long Video Script
-          {content.get('long_script', '')}
-
-          ## Description
-          {content.get('description', '')}
-
-          ## Hashtags
-          {' '.join(content.get('hashtags', []))}
-
-          ## Thumbnail Text
-          {content.get('thumbnail_text', '')}
-          """
-          Path("output/content.md").write_text(markdown, encoding="utf-8")
-
-          short_script = content.get("short_script", "").strip()
-          long_script = content.get("long_script", "").strip()
-
-          Path("output/short_script.txt").write_text(
-              short_script, encoding="utf-8"
+          (out / "content.md").write_text(
+              "# " + content.get("title", "") +
+              "\n\n## Shorts\n" + content["short_script"] +
+              "\n\n## Long video\n" + content["long_script"] +
+              "\n\n## Description\n" + content.get("description", "") +
+              "\n\n## Hashtags\n" + " ".join(content.get("hashtags", [])),
+              encoding="utf-8"
           )
-          Path("output/long_script.txt").write_text(
-              long_script, encoding="utf-8"
-          )
-
-          print("Hindi scripts generated successfully.")
+          print("Scripts generated.")
           PY
 
-      - name: Generate Hindi Female Voice
+      - name: Generate Female Hindi Voice
         run: |
-          mkdir -p output
-          edge-tts \
-            --voice hi-IN-SwaraNeural \
-            --text "$(cat output/short_script.txt)" \
-            --write-media output/short_voice.mp3
+          edge-tts --voice hi-IN-SwaraNeural \
+            --file output/short_script.txt \
+            --write-media output/short_voice.mp3 \
+            --write-subtitles output/short.srt
 
-          edge-tts \
-            --voice hi-IN-SwaraNeural \
-            --text "$(cat output/long_script.txt)" \
-            --write-media output/long_voice.mp3
+          edge-tts --voice hi-IN-SwaraNeural \
+            --file output/long_script.txt \
+            --write-media output/long_voice.mp3 \
+            --write-subtitles output/long.srt
 
-      - name: Save generated files
+      - name: Download Images
+        run: |
+          python - <<'PY'
+          import requests, time
+          from pathlib import Path
+
+          folder = Path("output/images")
+          folder.mkdir(parents=True, exist_ok=True)
+          session = requests.Session()
+          session.headers["User-Agent"] = "EducationalVideoBot/1.0 (GitHub Actions)"
+
+          topics = [
+              "space nebula", "Mars planet", "black hole astronomy",
+              "deep sea ocean", "robot technology", "galaxy stars",
+              "scientific laboratory", "telescope astronomy"
+          ]
+          saved = 0
+
+          for topic in topics:
+              if saved >= 8:
+                  break
+              try:
+                  response = session.get(
+                      "https://commons.wikimedia.org/w/api.php",
+                      params={
+                          "action": "query",
+                          "generator": "search",
+                          "gsrsearch": topic + " filetype:bitmap",
+                          "gsrnamespace": 6,
+                          "gsrlimit": 8,
+                          "prop": "imageinfo",
+                          "iiprop": "url",
+                          "iiurlwidth": 1280,
+                          "format": "json"
+                      },
+                      timeout=25
+                  )
+                  response.raise_for_status()
+                  pages = response.json().get("query", {}).get("pages", {})
+
+                  for page in pages.values():
+                      if saved >= 8:
+                          break
+                      info = page.get("imageinfo", [{}])[0]
+                      url = info.get("thumburl") or info.get("url")
+                      if not url:
+                          continue
+                      try:
+                          img = session.get(url, timeout=25)
+                          img.raise_for_status()
+                          if not img.headers.get("Content-Type", "").startswith("image/"):
+                              continue
+                          if len(img.content) < 10000:
+                              continue
+                          saved += 1
+                          (folder / f"image_{saved:02}.img").write_bytes(img.content)
+                          print("Downloaded:", topic, saved)
+                      except Exception as e:
+                          print("Image skipped:", str(e)[:150])
+                  time.sleep(0.3)
+              except Exception as e:
+                  print("Search skipped:", topic, str(e)[:150])
+
+          if saved == 0:
+              raise SystemExit("Images download nahi hui; internet/source check karein.")
+          print("Images downloaded:", saved)
+          PY
+
+      - name: Render Shorts and Long Video
+        run: |
+          python - <<'PY'
+          import subprocess, json
+          from pathlib import Path
+
+          out = Path("output")
+          image_files = sorted((out / "images").glob("*.img"))
+          if not image_files:
+              raise SystemExit("Images missing.")
+
+          def run(args):
+              subprocess.run(args, check=True)
+
+          def get_duration(path):
+              value = subprocess.check_output([
+                  "ffprobe", "-v", "error",
+                  "-show_entries", "format=duration",
+                  "-of", "default=noprint_wrappers=1:nokey=1",
+                  str(path)
+              ], text=True).strip()
+              return float(value)
+
+          def create_video(label, voice_name, srt_name, width, height, filename):
+              voice = out / voice_name
+              srt = out / srt_name
+              if not voice.exists() or not srt.exists():
+                  raise SystemExit("Voice/subtitle file missing: " + label)
+
+              duration = get_duration(voice)
+              segments = []
+              selected = image_files[:8]
+
+              for i, img in enumerate(selected):
+                  segment = out / f"{label}_{i:02}.mp4"
+                  vf = (
+                      f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+                      f"crop={width}:{height},"
+                      f"zoompan=z='min(zoom+0.0008,1.12)':d=1:"
+                      f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                      f"s={width}x{height}:fps=25,format=yuv420p"
+                  )
+                  run([
+                      "ffmpeg", "-y", "-loglevel", "error",
+                      "-loop", "1", "-i", str(img),
+                      "-vf", vf, "-t", "5",
+                      "-an", "-c:v", "libx264", "-preset", "ultrafast",
+                      "-pix_fmt", "yuv420p", str(segment)
+                  ])
+                  segments.append(segment)
+
+              concat = out / f"{label}_concat.txt"
+              concat.write_text(
+                  "".join(f"file '{p.resolve()}'\n" for p in segments),
+                  encoding="utf-8"
+              )
+              slideshow = out / f"{label}_slideshow.mp4"
+              run([
+                  "ffmpeg", "-y", "-loglevel", "error",
+                  "-f", "concat", "-safe", "0", "-i", str(concat),
+                  "-c", "copy", str(slideshow)
+              ])
+
+              final = out / filename
+              subtitle_filter = (
+                  f"subtitles={srt.as_posix()}:"
+                  "force_style='FontName=DejaVu Sans,FontSize=24,"
+                  "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+                  "BorderStyle=1,Outline=2,Alignment=2,MarginV=50'"
+              )
+
+              run([
+                  "ffmpeg", "-y", "-loglevel", "error",
+                  "-stream_loop", "-1", "-i", str(slideshow),
+                  "-i", str(voice),
+                  "-vf", subtitle_filter,
+                  "-map", "0:v:0", "-map", "1:a:0",
+                  "-t", str(duration),
+                  "-c:v", "libx264", "-preset", "ultrafast",
+                  "-crf", "25", "-pix_fmt", "yuv420p",
+                  "-c:a", "aac", "-b:a", "128k",
+                  "-movflags", "+faststart", str(final)
+              ])
+              print("Video created:", final)
+
+          create_video(
+              "short", "short_voice.mp3", "short.srt",
+              720, 1280, "youtube_short.mp4"
+          )
+          create_video(
+              "long", "long_voice.mp3", "long.srt",
+              1280, 720, "youtube_long.mp4"
+          )
+          print("Both videos completed.")
+          PY
+
+      - name: Upload Video Package
         uses: actions/upload-artifact@v4
         with:
-          name: youtube-content-${{ github.run_number }}
+          name: youtube-video-package-${{ github.run_number }}
           path: output/
           if-no-files-found: error
           retention-days: 7
