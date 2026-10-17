@@ -1,4 +1,3 @@
-
 name: Daily YouTube Script
 
 on:
@@ -7,64 +6,124 @@ on:
     - cron: "30 3 * * *"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   generate:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Generate original video idea and script
+      - name: Generate original Hindi YouTube content
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python - <<'PY'
-          import os, json, urllib.request
-          from datetime import datetime
+          import os
+          import json
+          import urllib.request
+          from datetime import datetime, timezone
 
-          prompt = """Create one original Hindi YouTube content package about a
-          fascinating science, technology or real-world mystery.
-          Return ONLY valid JSON with keys:
-          topic, short_title, short_script, long_title, long_outline,
-          description, visual_plan, fact_check_notes.
-          Short script should be 40-55 seconds in natural Hindi.
-          Long outline should support a 5-8 minute original video.
-          Avoid unsupported claims, copied content and fake facts.
-          Include source suggestions in fact_check_notes."""
+          prompt = """
+          Create one original Hindi YouTube content package about
+          fascinating science, technology, or real-world mysteries.
 
-          url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-          payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"}
-          }
-          req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode(),
-            headers={
-              "Content-Type": "application/json",
-              "x-goog-api-key": os.environ["GEMINI_API_KEY"]
-            }
+          Return ONLY valid JSON with these keys:
+          topic, short_title, short_script, long_title,
+          long_outline, description, visual_plan, fact_check_notes.
+
+          Requirements:
+          - Short script: natural Hindi, 40-55 seconds.
+          - Long outline: enough material for a 5-8 minute video.
+          - Make content engaging, original and easy to understand.
+          - Do not invent facts or present rumours as confirmed facts.
+          - Suggest reliable sources to verify factual claims.
+          - Include visual suggestions for both formats.
+          - Avoid copying existing creators' scripts.
+          """
+
+          api_key = os.environ.get("GEMINI_API_KEY")
+
+          if not api_key:
+              raise RuntimeError(
+                  "GEMINI_API_KEY secret is missing from GitHub."
+              )
+
+          url = (
+              "https://generativelanguage.googleapis.com/"
+              "v1beta/models/gemini-3.8-flash:generateContent"
           )
-          with urllib.request.urlopen(req, timeout=60) as response:
-            data = json.loads(response.read())
-          result = data["candidates"][0]["content"]["parts"][0]["text"]
+
+          payload = {
+              "contents": [
+                  {"parts": [{"text": prompt}]}
+              ],
+              "generationConfig": {
+                  "responseMimeType": "application/json"
+              }
+          }
+
+          request = urllib.request.Request(
+              url,
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Content-Type": "application/json",
+                  "x-goog-api-key": api_key
+              },
+              method="POST"
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=120) as response:
+                  data = json.loads(response.read().decode("utf-8"))
+          except Exception as error:
+              print("Gemini API request failed:", str(error))
+              raise
+
+          candidates = data.get("candidates", [])
+          if not candidates:
+              raise RuntimeError(
+                  "Gemini returned no content. Check the API response."
+              )
+
+          result = candidates[0]["content"]["parts"][0]["text"]
           package = json.loads(result)
-          package["generated_at_utc"] = datetime.utcnow().isoformat()
+          package["generated_at_utc"] = datetime.now(
+              timezone.utc
+          ).isoformat()
+
           os.makedirs("output", exist_ok=True)
-          with open("output/content_package.json", "w", encoding="utf-8") as f:
-            json.dump(package, f, ensure_ascii=False, indent=2)
-          with open("output/content_package.md", "w", encoding="utf-8") as f:
-            f.write("# " + package["topic"] + "\n\n")
-            f.write("## Short script\n" + package["short_script"] + "\n\n")
-            f.write("## Long video outline\n" + package["long_outline"] + "\n\n")
-            f.write("## Visual plan\n" + str(package["visual_plan"]) + "\n\n")
-            f.write("## Fact-check notes\n" + str(package["fact_check_notes"]))
-          print("Content package generated.")
+
+          with open(
+              "output/content_package.json", "w", encoding="utf-8"
+          ) as file:
+              json.dump(package, file, ensure_ascii=False, indent=2)
+
+          with open(
+              "output/content_package.md", "w", encoding="utf-8"
+          ) as file:
+              file.write("# " + str(package.get("topic", "YouTube Content")) + "\n\n")
+              file.write("## Short Video Title\n")
+              file.write(str(package.get("short_title", "")) + "\n\n")
+              file.write("## Short Script\n")
+              file.write(str(package.get("short_script", "")) + "\n\n")
+              file.write("## Long Video Title\n")
+              file.write(str(package.get("long_title", "")) + "\n\n")
+              file.write("## Long Video Outline\n")
+              file.write(str(package.get("long_outline", "")) + "\n\n")
+              file.write("## Description\n")
+              file.write(str(package.get("description", "")) + "\n\n")
+              file.write("## Visual Plan\n")
+              file.write(str(package.get("visual_plan", "")) + "\n\n")
+              file.write("## Fact Check Notes\n")
+              file.write(str(package.get("fact_check_notes", "")) + "\n")
+
+          print("SUCCESS: YouTube content package generated.")
+
           PY
 
-      - name: Save generated package
+      - name: Save generated content
         uses: actions/upload-artifact@v4
         with:
           name: youtube-content-package
           path: output/
           retention-days: 7
-          
