@@ -2,7 +2,7 @@ name: Facebook Auto Post
 
 on:
   workflow_run:
-    workflows: ["daily"]        # ⚠️ Yahan apne daily.yml wale 'name:' ko exact match karo
+    workflows: ["Daily YouTube Video Generator"]  # <--- Yahi naam change kiya hai
     types: [completed]
   workflow_dispatch:            # Manual test ke liye
 
