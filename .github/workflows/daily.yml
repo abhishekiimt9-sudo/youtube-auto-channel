@@ -25,13 +25,9 @@ jobs:
       - name: Install Tools and Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-indic fonts-noto
           python -m pip install --upgrade pip
           pip install edge-tts requests google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
-
-      - name: Install Hindi Fonts
-        run: |
-          sudo apt-get install -y fonts-indic fonts-noto
 
       - name: Generate Hindi Cartoon Script
         env:
@@ -41,7 +37,6 @@ jobs:
           import os
           import json
           import urllib.request
-          import urllib.error
           from pathlib import Path
 
           key = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -64,32 +59,10 @@ jobs:
               with urllib.request.urlopen(req, timeout=120) as response:
                   return json.loads(response.read().decode("utf-8"))
 
-          try:
-              model_data = request_api(base + "/models")
-          except Exception as e:
-              raise SystemExit(
-                  "Could not list Gemini models. Check API key and API access. " + str(e)
-              )
-
-          available = [
-              m["name"] for m in model_data.get("models", [])
-              if "generateContent" in m.get("supportedGenerationMethods", [])
-          ]
-
-          preferred = [
-              "models/gemini-3.8-flash",
-              "models/gemini-3.5-flash-lite",
-              "models/gemini-3.6-flash"
-          ]
-
-          candidates = [m for m in preferred if m in available]
-          candidates += [
-              m for m in available
-              if "flash" in m.lower() and m not in candidates and "2.5" not in m.lower()
-          ]
-
-          if not candidates:
-              raise SystemExit("No supported Gemini Flash model available.")
+          model_data = request_api(base + "/models")
+          available = [m["name"] for m in model_data.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
+          
+          candidates = [m for m in available if "flash" in m.lower()]
 
           prompt = """
           Create an engaging Hindi cartoon moral story for kids. 
@@ -97,7 +70,7 @@ jobs:
           Write natural Hindi in Devanagari.
           Return only valid JSON with these fields:
           {
-            "topic": "A short English keyword for image generation (e.g., cute cartoon animals in jungle)",
+            "topic": "Short English keyword for image generation",
             "title": "Shorts title in Hindi",
             "short_script": "Narration of about 45-60 seconds",
             "long_title": "Long video title in Hindi",
@@ -109,10 +82,7 @@ jobs:
 
           payload = {
               "contents": [{"parts": [{"text": prompt}]}],
-              "generationConfig": {
-                  "temperature": 0.8,
-                  "responseMimeType": "application/json"
-              }
+              "generationConfig": {"temperature": 0.8, "responseMimeType": "application/json"}
           }
 
           result = None
@@ -123,8 +93,8 @@ jobs:
               except Exception:
                   continue
 
-          if result is None:
-              raise SystemExit("All Gemini models failed.")
+          if not result:
+              raise SystemExit("Gemini API failed to generate script.")
 
           parts = result.get("candidates", [{}])[0].get("content", {}).get("parts", [])
           raw = "".join(p.get("text", "") for p in parts).strip()
@@ -142,8 +112,6 @@ jobs:
           (out / "content.json").write_text(json.dumps(content, ensure_ascii=False, indent=2), encoding="utf-8")
           (out / "short_script.txt").write_text(content["short_script"], encoding="utf-8")
           (out / "long_script.txt").write_text(content["long_script"], encoding="utf-8")
-
-          print("Cartoon Script generated successfully.")
           PY
 
       - name: Generate Hindi Voice and Subtitles
@@ -151,7 +119,7 @@ jobs:
           edge-tts --voice hi-IN-SwaraNeural --file output/short_script.txt --write-media output/short_voice.mp3 --write-subtitles output/short.srt
           edge-tts --voice hi-IN-SwaraNeural --file output/long_script.txt --write-media output/long_voice.mp3 --write-subtitles output/long.srt
 
-      - name: Generate Cartoon Images using AI
+      - name: Generate AI Cartoon Images
         run: |
           python - <<'PY'
           import urllib.request
@@ -163,45 +131,40 @@ jobs:
           folder = Path("output/images")
           folder.mkdir(parents=True, exist_ok=True)
 
+          # 8 alag alag cartoon prompts
           prompts = [
-              "cute cartoon character in a magical forest, 3d animation style, colorful",
-              "funny cartoon animals playing together, pixar style, high quality",
-              "beautiful cartoon village background, bright colors, kids illustration",
-              "cute cartoon child smiling, 3d animation style",
-              "magical cartoon landscape with rainbow, high quality",
-              "funny cartoon rabbit and turtle, kids story illustration",
-              "cartoon cute animals talking, bright sunny day",
+              "cute 3d cartoon animal in magical forest",
+              "funny cartoon kids playing, pixar style",
+              "beautiful cartoon village background",
+              "cute cartoon child smiling, 3d animation",
+              "magical cartoon landscape with rainbow",
+              "funny cartoon rabbit, kids story",
+              "cartoon cute animals talking, sunny day",
               "happy cartoon ending scene, colorful"
           ]
 
           saved = 0
-          for i, prompt in enumerate(prompts):
-              if saved >= 8:
-                  break
+          for prompt in prompts:
               try:
                   encoded_prompt = urllib.parse.quote(prompt)
                   url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=720&nologo=true&seed={random.randint(1, 99999)}"
-                  
                   req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                   with urllib.request.urlopen(req, timeout=60) as response:
                       image_data = response.read()
-                      
                       if len(image_data) > 10000:
                           saved += 1
                           path = folder / f"image_{saved:02}.jpg"
                           path.write_bytes(image_data)
-                          print(f"Downloaded AI Cartoon Image: {saved}")
-                  time.sleep(1)
+                          print(f"Downloaded Image {saved}")
+                  time.sleep(2) 
               except Exception as e:
                   print("Image failed:", str(e)[:100])
 
-          if saved == 0:
-              raise SystemExit("No AI cartoon images downloaded.")
-
-          print("Total images generated:", saved)
+          if saved < 4:
+              raise SystemExit("Not enough images downloaded.")
           PY
 
-      - name: Render Shorts and Long Video
+      - name: Render Smooth Videos with Subtitles
         run: |
           python - <<'PY'
           import subprocess
@@ -209,9 +172,6 @@ jobs:
 
           out = Path("output")
           images = sorted((out / "images").glob("*.jpg"))
-
-          if not images:
-              raise SystemExit("No images found.")
 
           def run(args):
               subprocess.run(args, check=True)
@@ -226,17 +186,15 @@ jobs:
           def render(label, voice_name, srt_name, width, height, filename):
               voice = out / voice_name
               srt = out / srt_name
-
-              if not voice.exists() or not srt.exists():
-                  raise SystemExit("Voice/subtitles missing: " + label)
-
               clips = []
+
+              # Smooth Zoom effect (Ken Burns)
               for i, image in enumerate(images):
                   clip = out / f"{label}_{i:02}.mp4"
                   vf = (
-                      f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-                      f"crop={width}:{height},"
-                      "zoompan=z='min(zoom+0.001,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                      f"scale={width*2}:{height*2}:force_original_aspect_ratio=increase,"
+                      f"crop={width*2}:{height*2},"
+                      "zoompan=z='min(zoom+0.0015,1.4)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
                       f"d=125:s={width}x{height}:fps=25,format=yuv420p"
                   )
                   run(["ffmpeg", "-y", "-loglevel", "error", "-loop", "1", "-i", str(image),
@@ -249,9 +207,10 @@ jobs:
               slideshow = out / f"{label}_slideshow.mp4"
               run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(slideshow)])
 
+              # Hindi Subtitle Fix
               subtitle_filter = (
                   f"subtitles={srt.as_posix()}:"
-                  "force_style='FontName=Noto Sans Devanagari,FontSize=24,"
+                  "force_style='FontName=Noto Sans Devanagari,FontSize=26,"
                   "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
                   "BorderStyle=1,Outline=2,Alignment=2,MarginV=50'"
               )
@@ -262,20 +221,10 @@ jobs:
                    "-t", str(duration(voice)), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "25",
                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(final)])
 
-              print("Created:", filename)
-
           render("short", "short_voice.mp3", "short.srt", 720, 1280, "youtube_short.mp4")
           render("long", "long_voice.mp3", "long.srt", 1280, 720, "youtube_long.mp4")
-          print("Both videos rendered successfully.")
+          print("Videos Rendered Successfully.")
           PY
-
-      - name: Save Video Package
-        uses: actions/upload-artifact@v4
-        with:
-          name: youtube-video-package-${{ github.run_number }}
-          path: output/
-          if-no-files-found: error
-          retention-days: 7
 
       - name: Upload Videos to YouTube
         env:
@@ -301,18 +250,11 @@ jobs:
               scopes=["https://www.googleapis.com/auth/youtube.upload"]
           )
 
-          try:
-              credentials.refresh(Request())
-          except Exception as e:
-              raise SystemExit("YouTube authorization failed: " + str(e))
-
+          credentials.refresh(Request())
           youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
 
           content = json.loads(Path("output/content.json").read_text(encoding="utf-8"))
-
-          description = (
-              content.get("description", "") + "\n\n" + " ".join(content.get("hashtags", []))
-          ).strip()
+          description = (content.get("description", "") + "\n\n" + " ".join(content.get("hashtags", []))).strip()
 
           videos = [
               ("output/youtube_short.mp4", (content["title"] + " #Shorts")[:100], description + "\n#Shorts"),
@@ -321,9 +263,6 @@ jobs:
 
           for filename, title, desc in videos:
               path = Path(filename)
-              if not path.is_file():
-                  raise SystemExit("Video missing: " + filename)
-
               body = {
                   "snippet": {
                       "title": title,
@@ -340,6 +279,4 @@ jobs:
               media = MediaFileUpload(str(path), mimetype="video/mp4", resumable=True)
               response = youtube.videos().insert(part="snippet,status", body=body, media_body=media).execute()
               print("Upload successful. Video ID:", response["id"])
-
-          print("Both videos uploaded as public.")
           PY
