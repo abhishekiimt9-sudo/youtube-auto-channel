@@ -1,0 +1,70 @@
+
+name: Daily YouTube Script
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 3 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate original video idea and script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request
+          from datetime import datetime
+
+          prompt = """Create one original Hindi YouTube content package about a
+          fascinating science, technology or real-world mystery.
+          Return ONLY valid JSON with keys:
+          topic, short_title, short_script, long_title, long_outline,
+          description, visual_plan, fact_check_notes.
+          Short script should be 40-55 seconds in natural Hindi.
+          Long outline should support a 5-8 minute original video.
+          Avoid unsupported claims, copied content and fake facts.
+          Include source suggestions in fact_check_notes."""
+
+          url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+          payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json"}
+          }
+          req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={
+              "Content-Type": "application/json",
+              "x-goog-api-key": os.environ["GEMINI_API_KEY"]
+            }
+          )
+          with urllib.request.urlopen(req, timeout=60) as response:
+            data = json.loads(response.read())
+          result = data["candidates"][0]["content"]["parts"][0]["text"]
+          package = json.loads(result)
+          package["generated_at_utc"] = datetime.utcnow().isoformat()
+          os.makedirs("output", exist_ok=True)
+          with open("output/content_package.json", "w", encoding="utf-8") as f:
+            json.dump(package, f, ensure_ascii=False, indent=2)
+          with open("output/content_package.md", "w", encoding="utf-8") as f:
+            f.write("# " + package["topic"] + "\n\n")
+            f.write("## Short script\n" + package["short_script"] + "\n\n")
+            f.write("## Long video outline\n" + package["long_outline"] + "\n\n")
+            f.write("## Visual plan\n" + str(package["visual_plan"]) + "\n\n")
+            f.write("## Fact-check notes\n" + str(package["fact_check_notes"]))
+          print("Content package generated.")
+          PY
+
+      - name: Save generated package
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-content-package
+          path: output/
+          retention-days: 7
+          
