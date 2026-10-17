@@ -1,4 +1,4 @@
-name: Daily YouTube Video Generator
+name: Daily YouTube Cartoon Story Generator
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
         run: |
           sudo apt-get install -y fonts-indic fonts-noto
 
-      - name: Generate Hindi Scripts
+      - name: Generate Hindi Cartoon Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -68,15 +68,12 @@ jobs:
               model_data = request_api(base + "/models")
           except Exception as e:
               raise SystemExit(
-                  "Could not list Gemini models. Check API key and API access. "
-                  + str(e)
+                  "Could not list Gemini models. Check API key and API access. " + str(e)
               )
 
           available = [
               m["name"] for m in model_data.get("models", [])
-              if "generateContent" in m.get(
-                  "supportedGenerationMethods", []
-              )
+              if "generateContent" in m.get("supportedGenerationMethods", [])
           ]
 
           preferred = [
@@ -88,211 +85,120 @@ jobs:
           candidates = [m for m in preferred if m in available]
           candidates += [
               m for m in available
-              if "flash" in m.lower() and m not in candidates
-              and "2.5" not in m.lower()
+              if "flash" in m.lower() and m not in candidates and "2.5" not in m.lower()
           ]
 
           if not candidates:
-              print("Available models:", available)
-              raise SystemExit(
-                  "No supported Gemini Flash model available to this API key."
-              )
+              raise SystemExit("No supported Gemini Flash model available.")
 
           prompt = """
-          Create an engaging Hindi YouTube video about science,
-          technology, space or a real-world mystery.
-          Use accurate facts and do not invent scientific claims.
+          Create an engaging Hindi cartoon moral story for kids. 
+          The story should be funny, educational, and have a good moral at the end.
           Write natural Hindi in Devanagari.
           Return only valid JSON with these fields:
           {
-            "topic": "topic",
+            "topic": "A short English keyword for image generation (e.g., cute cartoon animals in jungle)",
             "title": "Shorts title in Hindi",
             "short_script": "Narration of about 45-60 seconds",
             "long_title": "Long video title in Hindi",
-            "long_script": "Narration of about 4-5 minutes",
+            "long_script": "Narration of about 3-4 minutes",
             "description": "Hindi video description",
-            "hashtags": ["#Science", "#Hindi", "#Mystery"]
+            "hashtags": ["#Cartoon", "#HindiStories", "#Kids"]
           }
           """
 
           payload = {
               "contents": [{"parts": [{"text": prompt}]}],
               "generationConfig": {
-                  "temperature": 0.7,
+                  "temperature": 0.8,
                   "responseMimeType": "application/json"
               }
           }
 
           result = None
-          selected_model = None
-
           for model in candidates:
-              print("Trying Gemini model:", model)
               try:
-                  result = request_api(
-                      base + "/" + model + ":generateContent",
-                      payload
-                  )
-                  selected_model = model
+                  result = request_api(base + "/" + model + ":generateContent", payload)
                   break
-              except urllib.error.HTTPError as e:
-                  details = e.read().decode("utf-8", errors="replace")
-                  print("Model request failed:", e.code, model)
-                  print(details[:500])
-              except Exception as e:
-                  print("Model failed:", model, str(e)[:300])
+              except Exception:
+                  continue
 
           if result is None:
-              raise SystemExit(
-                  "All available Gemini Flash models failed. "
-                  "Check Google AI Studio API access and billing/quota."
-              )
+              raise SystemExit("All Gemini models failed.")
 
-          parts = result.get("candidates", [{}])[0].get(
-              "content", {}
-          ).get("parts", [])
+          parts = result.get("candidates", [{}])[0].get("content", {}).get("parts", [])
           raw = "".join(p.get("text", "") for p in parts).strip()
-
-          if not raw:
-              raise SystemExit(
-                  "Gemini returned no script. Check API response and quota."
-              )
 
           try:
               content = json.loads(raw)
           except json.JSONDecodeError:
               start = raw.find("{")
               end = raw.rfind("}")
-              if start < 0 or end <= start:
-                  raise SystemExit("Gemini returned invalid JSON.")
               content = json.loads(raw[start:end + 1])
-
-          required = [
-              "topic", "title", "short_script",
-              "long_title", "long_script", "description"
-          ]
-          for field in required:
-              if not str(content.get(field, "")).strip():
-                  raise SystemExit("Missing content field: " + field)
-
-          if not isinstance(content.get("hashtags", []), list):
-              content["hashtags"] = ["#Science", "#Hindi", "#Mystery"]
 
           out = Path("output")
           out.mkdir(exist_ok=True)
 
-          (out / "content.json").write_text(
-              json.dumps(content, ensure_ascii=False, indent=2),
-              encoding="utf-8"
-          )
-          (out / "short_script.txt").write_text(
-              content["short_script"], encoding="utf-8"
-          )
-          (out / "long_script.txt").write_text(
-              content["long_script"], encoding="utf-8"
-          )
+          (out / "content.json").write_text(json.dumps(content, ensure_ascii=False, indent=2), encoding="utf-8")
+          (out / "short_script.txt").write_text(content["short_script"], encoding="utf-8")
+          (out / "long_script.txt").write_text(content["long_script"], encoding="utf-8")
 
-          print("Scripts generated using:", selected_model)
+          print("Cartoon Script generated successfully.")
           PY
 
       - name: Generate Hindi Voice and Subtitles
         run: |
-          edge-tts \
-            --voice hi-IN-SwaraNeural \
-            --file output/short_script.txt \
-            --write-media output/short_voice.mp3 \
-            --write-subtitles output/short.srt
+          edge-tts --voice hi-IN-SwaraNeural --file output/short_script.txt --write-media output/short_voice.mp3 --write-subtitles output/short.srt
+          edge-tts --voice hi-IN-SwaraNeural --file output/long_script.txt --write-media output/long_voice.mp3 --write-subtitles output/long.srt
 
-          edge-tts \
-            --voice hi-IN-SwaraNeural \
-            --file output/long_script.txt \
-            --write-media output/long_voice.mp3 \
-            --write-subtitles output/long.srt
-
-      - name: Download Science Images
+      - name: Generate Cartoon Images using AI
         run: |
           python - <<'PY'
-          import requests
+          import urllib.request
+          import urllib.parse
           import time
           from pathlib import Path
+          import random
 
           folder = Path("output/images")
           folder.mkdir(parents=True, exist_ok=True)
 
-          session = requests.Session()
-          session.headers["User-Agent"] = "HindiScienceVideo/1.0"
-
-          topics = [
-              "space nebula", "Mars planet", "black hole astronomy",
-              "deep sea ocean", "robot technology", "galaxy stars",
-              "scientific laboratory", "telescope astronomy"
+          prompts = [
+              "cute cartoon character in a magical forest, 3d animation style, colorful",
+              "funny cartoon animals playing together, pixar style, high quality",
+              "beautiful cartoon village background, bright colors, kids illustration",
+              "cute cartoon child smiling, 3d animation style",
+              "magical cartoon landscape with rainbow, high quality",
+              "funny cartoon rabbit and turtle, kids story illustration",
+              "cartoon cute animals talking, bright sunny day",
+              "happy cartoon ending scene, colorful"
           ]
 
           saved = 0
-
-          for topic in topics:
+          for i, prompt in enumerate(prompts):
               if saved >= 8:
                   break
-
               try:
-                  response = session.get(
-                      "https://commons.wikimedia.org/w/api.php",
-                      params={
-                          "action": "query",
-                          "generator": "search",
-                          "gsrsearch": topic + " filetype:bitmap",
-                          "gsrnamespace": 6,
-                          "gsrlimit": 8,
-                          "prop": "imageinfo",
-                          "iiprop": "url",
-                          "iiurlwidth": 1280,
-                          "format": "json"
-                      },
-                      timeout=30
-                  )
-                  response.raise_for_status()
-                  pages = response.json().get(
-                      "query", {}
-                  ).get("pages", {})
-
-                  for page in pages.values():
-                      if saved >= 8:
-                          break
-
-                      info = page.get("imageinfo", [{}])[0]
-                      url = info.get("thumburl") or info.get("url")
-                      if not url:
-                          continue
-
-                      try:
-                          image = session.get(url, timeout=30)
-                          image.raise_for_status()
-
-                          if not image.headers.get(
-                              "Content-Type", ""
-                          ).startswith("image/"):
-                              continue
-
-                          if len(image.content) < 10000:
-                              continue
-
+                  encoded_prompt = urllib.parse.quote(prompt)
+                  url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=720&nologo=true&seed={random.randint(1, 99999)}"
+                  
+                  req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      image_data = response.read()
+                      
+                      if len(image_data) > 10000:
                           saved += 1
                           path = folder / f"image_{saved:02}.jpg"
-                          path.write_bytes(image.content)
-                          print("Downloaded image:", saved)
-
-                      except Exception as e:
-                          print("Image skipped:", str(e)[:120])
-
-                  time.sleep(0.5)
-
+                          path.write_bytes(image_data)
+                          print(f"Downloaded AI Cartoon Image: {saved}")
+                  time.sleep(1)
               except Exception as e:
-                  print("Search skipped:", str(e)[:120])
+                  print("Image failed:", str(e)[:100])
 
           if saved == 0:
-              raise SystemExit("No images downloaded.")
+              raise SystemExit("No AI cartoon images downloaded.")
 
-          print("Total images:", saved)
+          print("Total images generated:", saved)
           PY
 
       - name: Render Shorts and Long Video
@@ -312,10 +218,8 @@ jobs:
 
           def duration(path):
               value = subprocess.check_output([
-                  "ffprobe", "-v", "error",
-                  "-show_entries", "format=duration",
-                  "-of", "default=noprint_wrappers=1:nokey=1",
-                  str(path)
+                  "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                  "-of", "default=noprint_wrappers=1:nokey=1", str(path)
               ], text=True).strip()
               return float(value)
 
@@ -327,45 +231,23 @@ jobs:
                   raise SystemExit("Voice/subtitles missing: " + label)
 
               clips = []
-
               for i, image in enumerate(images):
                   clip = out / f"{label}_{i:02}.mp4"
-
                   vf = (
-                      f"scale={width}:{height}:"
-                      "force_original_aspect_ratio=increase,"
+                      f"scale={width}:{height}:force_original_aspect_ratio=increase,"
                       f"crop={width}:{height},"
-                      "zoompan=z='min(zoom+0.001,1.12)':"
-                      "x='iw/2-(iw/zoom/2)':"
-                      "y='ih/2-(ih/zoom/2)':"
-                      f"d=125:s={width}x{height}:fps=25,"
-                      "format=yuv420p"
+                      "zoompan=z='min(zoom+0.001,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                      f"d=125:s={width}x{height}:fps=25,format=yuv420p"
                   )
-
-                  run([
-                      "ffmpeg", "-y", "-loglevel", "error",
-                      "-loop", "1", "-i", str(image),
-                      "-vf", vf, "-t", "5",
-                      "-an", "-c:v", "libx264",
-                      "-preset", "ultrafast",
-                      "-pix_fmt", "yuv420p", str(clip)
-                  ])
+                  run(["ffmpeg", "-y", "-loglevel", "error", "-loop", "1", "-i", str(image),
+                       "-vf", vf, "-t", "5", "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(clip)])
                   clips.append(clip)
 
               concat = out / f"{label}_concat.txt"
-              concat.write_text(
-                  "".join(
-                      f"file '{p.resolve()}'\n" for p in clips
-                  ),
-                  encoding="utf-8"
-              )
+              concat.write_text("".join(f"file '{p.resolve()}'\n" for p in clips), encoding="utf-8")
 
               slideshow = out / f"{label}_slideshow.mp4"
-              run([
-                  "ffmpeg", "-y", "-loglevel", "error",
-                  "-f", "concat", "-safe", "0", "-i", str(concat),
-                  "-c", "copy", str(slideshow)
-              ])
+              run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(slideshow)])
 
               subtitle_filter = (
                   f"subtitles={srt.as_posix()}:"
@@ -375,35 +257,15 @@ jobs:
               )
 
               final = out / filename
-
-              run([
-                  "ffmpeg", "-y", "-loglevel", "error",
-                  "-stream_loop", "-1", "-i", str(slideshow),
-                  "-i", str(voice),
-                  "-vf", subtitle_filter,
-                  "-map", "0:v:0", "-map", "1:a:0",
-                  "-t", str(duration(voice)),
-                  "-c:v", "libx264", "-preset", "ultrafast",
-                  "-crf", "25", "-pix_fmt", "yuv420p",
-                  "-c:a", "aac", "-b:a", "128k",
-                  "-movflags", "+faststart", str(final)
-              ])
-
-              if not final.exists() or final.stat().st_size == 0:
-                  raise SystemExit("Video creation failed: " + filename)
+              run(["ffmpeg", "-y", "-loglevel", "error", "-stream_loop", "-1", "-i", str(slideshow),
+                   "-i", str(voice), "-vf", subtitle_filter, "-map", "0:v:0", "-map", "1:a:0",
+                   "-t", str(duration(voice)), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "25",
+                   "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(final)])
 
               print("Created:", filename)
 
-          render(
-              "short", "short_voice.mp3", "short.srt",
-              720, 1280, "youtube_short.mp4"
-          )
-
-          render(
-              "long", "long_voice.mp3", "long.srt",
-              1280, 720, "youtube_long.mp4"
-          )
-
+          render("short", "short_voice.mp3", "short.srt", 720, 1280, "youtube_short.mp4")
+          render("long", "long_voice.mp3", "long.srt", 1280, 720, "youtube_long.mp4")
           print("Both videos rendered successfully.")
           PY
 
@@ -430,14 +292,6 @@ jobs:
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          for name in [
-              "YOUTUBE_CLIENT_ID",
-              "YOUTUBE_CLIENT_SECRET",
-              "YOUTUBE_REFRESH_TOKEN"
-          ]:
-              if not os.environ.get(name, "").strip():
-                  raise SystemExit("Missing GitHub Secret: " + name)
-
           credentials = Credentials(
               token=None,
               refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"].strip(),
@@ -450,42 +304,23 @@ jobs:
           try:
               credentials.refresh(Request())
           except Exception as e:
-              raise SystemExit(
-                  "YouTube authorization failed. Refresh token may have expired. "
-                  + str(e)
-              )
+              raise SystemExit("YouTube authorization failed: " + str(e))
 
-          youtube = build(
-              "youtube", "v3",
-              credentials=credentials,
-              cache_discovery=False
-          )
+          youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
 
-          content = json.loads(
-              Path("output/content.json").read_text(encoding="utf-8")
-          )
+          content = json.loads(Path("output/content.json").read_text(encoding="utf-8"))
 
           description = (
-              content.get("description", "") + "\n\n" +
-              " ".join(content.get("hashtags", []))
+              content.get("description", "") + "\n\n" + " ".join(content.get("hashtags", []))
           ).strip()
 
           videos = [
-              (
-                  "output/youtube_short.mp4",
-                  (content["title"] + " #Shorts")[:100],
-                  description + "\n#Shorts"
-              ),
-              (
-                  "output/youtube_long.mp4",
-                  content["long_title"][:100],
-                  description
-              )
+              ("output/youtube_short.mp4", (content["title"] + " #Shorts")[:100], description + "\n#Shorts"),
+              ("output/youtube_long.mp4", content["long_title"][:100], description)
           ]
 
           for filename, title, desc in videos:
               path = Path(filename)
-
               if not path.is_file():
                   raise SystemExit("Video missing: " + filename)
 
@@ -493,31 +328,18 @@ jobs:
                   "snippet": {
                       "title": title,
                       "description": desc[:5000],
-                      "categoryId": "28",
+                      "categoryId": "24",
                       "defaultLanguage": "hi"
                   },
                   "status": {
                       "privacyStatus": "public",
-                      "selfDeclaredMadeForKids": False
+                      "selfDeclaredMadeForKids": True
                   }
               }
 
-              media = MediaFileUpload(
-                  str(path),
-                  mimetype="video/mp4",
-                  resumable=True
-              )
-
-              response = youtube.videos().insert(
-                  part="snippet,status",
-                  body=body,
-                  media_body=media
-              ).execute()
-
-              print(
-                  "Upload successful. Video ID:",
-                  response["id"]
-              )
+              media = MediaFileUpload(str(path), mimetype="video/mp4", resumable=True)
+              response = youtube.videos().insert(part="snippet,status", body=body, media_body=media).execute()
+              print("Upload successful. Video ID:", response["id"])
 
           print("Both videos uploaded as public.")
           PY
