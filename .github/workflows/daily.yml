@@ -18,7 +18,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 🔴 NAYA STEP: Purani files delete karne ke liye (Same video na aaye)
+      # 🔴 NAYA STEP: Purani files delete karega taaki same video repeat na ho
       - name: Clean old files
         run: rm -rf output
 
@@ -47,6 +47,7 @@ jobs:
           import json
           import urllib.request
           import urllib.error
+          import random
           from pathlib import Path
 
           key = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -103,13 +104,16 @@ jobs:
                   "No supported Gemini Flash model available to this API key."
               )
 
-          prompt = """
-          Create an engaging Hindi YouTube video about science,
-          technology, space or a real-world mystery.
+          # 🟢 NAYA: Random Topic generate karega taaki har baar nayi script bane
+          topics = ["Space", "Artificial Intelligence", "Black Holes", "Deep Sea Mysteries", "Quantum Physics", "Ancient Technology", "Future Tech", "Aliens", "Time Travel"]
+          random_topic = random.choice(topics)
+
+          prompt = f"""
+          Create an engaging Hindi YouTube video about {random_topic} or a related scientific mystery.
           Use accurate facts and do not invent scientific claims.
           Write natural Hindi in Devanagari.
           Return only valid JSON with these fields:
-          {
+          {{
             "topic": "topic",
             "title": "Shorts title in Hindi",
             "short_script": "Narration of about 45-60 seconds",
@@ -117,7 +121,7 @@ jobs:
             "long_script": "Narration of about 4-5 minutes",
             "description": "Hindi video description",
             "hashtags": ["#Science", "#Hindi", "#Mystery"]
-          }
+          }}
           """
 
           payload = {
@@ -197,7 +201,7 @@ jobs:
               content["long_script"], encoding="utf-8"
           )
 
-          print("Scripts generated using:", selected_model)
+          print("Scripts generated using:", selected_model, "| Topic:", random_topic)
           PY
 
       - name: Generate Hindi Voice and Subtitles
@@ -219,6 +223,7 @@ jobs:
           python - <<'PY'
           import requests
           import time
+          import random
           from pathlib import Path
 
           folder = Path("output/images")
@@ -232,7 +237,8 @@ jobs:
               "deep sea ocean", "robot technology", "galaxy stars",
               "scientific laboratory", "telescope astronomy"
           ]
-
+          
+          random.shuffle(topics) # 🟢 Random images taaki repeat na ho
           saved = 0
 
           for topic in topics:
@@ -528,25 +534,71 @@ jobs:
           PY
 
       # ==========================================
-      # 🔴 NAYA STEP: FACEBOOK PAR VIDEO UPLOAD
+      # 🔴 NAYA STEP: FACEBOOK PAR BADE VIDEO KO CHUNKS ME UPLOAD KARNA
       # ==========================================
-      - name: Upload to Facebook Page
+      - name: Upload to Facebook Page (Resumable API)
         env:
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
         run: |
-          # Facebook par long video upload karenge
-          VIDEO="output/youtube_long.mp4"
+          python - <<'PY'
+          import os, requests
+          from pathlib import Path
+
+          video_path = Path("output/youtube_long.mp4")
+          if not video_path.is_file():
+              raise SystemExit("Video file not found for Facebook upload.")
+
+          page_id = os.environ["FB_PAGE_ID"]
+          token = os.environ["FB_PAGE_ACCESS_TOKEN"]
+          file_size = video_path.stat().st_size
+
+          print(f"Starting Facebook upload for {file_size/1024/1024:.2f} MB...")
+
+          # 1. Start Phase
+          start_url = f"https://graph-video.facebook.com/v21.0/{page_id}/videos"
+          start_payload = {"upload_phase": "start", "file_size": file_size, "access_token": token}
           
-          if [ -f "$VIDEO" ]; then
-            echo "Facebook par upload ho raha hai: $VIDEO"
-            curl -X POST "https://graph.facebook.com/v21.0/${FB_PAGE_ID}/videos" \
-              -F "source=@$VIDEO" \
-              -F "description=New Video from my Auto Channel! #AutoTech #Science" \
-              -F "access_token=${FB_PAGE_ACCESS_TOKEN}" \
-              --fail-with-body
-            echo "Facebook upload successful!"
-          else
-            echo "Error: Long video file nahi mili."
-            exit 1
-          fi
+          r = requests.post(start_url, data=start_payload)
+          if r.status_code != 200:
+              raise SystemExit(f"Start phase failed: {r.text}")
+              
+          data = r.json()
+          upload_session_id = data["upload_session_id"]
+          start_offset = int(data["start_offset"])
+          end_offset = int(data["end_offset"])
+
+          # 2. Transfer Phase (Chunks me upload)
+          with open(video_path, "rb") as f:
+              while start_offset < end_offset:
+                  f.seek(start_offset)
+                  chunk = f.read(end_offset - start_offset)
+                  files = {"video_file_chunk": ("chunk.mp4", chunk, "video/mp4")}
+                  transfer_payload = {
+                      "upload_phase": "transfer", 
+                      "upload_session_id": upload_session_id, 
+                      "start_offset": start_offset, 
+                      "access_token": token
+                  }
+                  r = requests.post(start_url, data=transfer_payload, files=files)
+                  if r.status_code != 200:
+                      raise SystemExit(f"Transfer phase failed: {r.text}")
+                      
+                  res = r.json()
+                  start_offset = int(res["start_offset"])
+                  end_offset = int(res["end_offset"])
+                  print(f"Uploaded chunk: {start_offset}/{file_size} bytes")
+
+          # 3. Finish Phase
+          finish_payload = {
+              "upload_phase": "finish", 
+              "upload_session_id": upload_session_id, 
+              "access_token": token, 
+              "description": "New Video from my Auto Channel! #AutoTech #Science"
+          }
+          r = requests.post(start_url, data=finish_payload)
+          if r.status_code != 200:
+              raise SystemExit(f"Finish phase failed: {r.text}")
+              
+          print("Facebook upload successful!")
+          PY
