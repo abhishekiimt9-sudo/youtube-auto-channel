@@ -34,7 +34,7 @@ jobs:
             exit 1
           }
 
-      - name: Find latest Blogger article and post to Facebook
+      - name: Share today's Blogger article
         env:
           BLOG_URL: https://smarttechguide365.blogspot.com/
         run: |
@@ -44,14 +44,16 @@ jobs:
           import urllib.request
           import urllib.parse
           import urllib.error
-          import xml.etree.ElementTree as ET
-          import html
+          import datetime
           import re
+          import html
           import sys
+          from zoneinfo import ZoneInfo
 
+          blog_url = os.environ["BLOG_URL"].rstrip("/")
           feed_url = (
-              os.environ["BLOG_URL"].rstrip("/")
-              + "/feeds/posts/default?alt=json&max-results=5"
+              blog_url
+              + "/feeds/posts/default?alt=json&max-results=10"
           )
 
           def get_json(url):
@@ -59,71 +61,88 @@ jobs:
                   url,
                   headers={"User-Agent": "SmartTechGuide365/1.0"}
               )
-              with urllib.request.urlopen(req, timeout=30) as r:
-                  return json.loads(r.read().decode("utf-8"))
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.loads(response.read().decode("utf-8"))
 
           feed = get_json(feed_url)
           entries = feed.get("feed", {}).get("entry", [])
 
-          if not entries:
-              print("No published Blogger articles found. Skipping.")
+          india_today = datetime.datetime.now(
+              ZoneInfo("Asia/Kolkata")
+          ).date()
+
+          chosen = None
+
+          for entry in entries:
+              published = entry.get("published", {}).get("$t", "")
+              if not published:
+                  continue
+
+              try:
+                  published_date = datetime.datetime.fromisoformat(
+                      published.replace("Z", "+00:00")
+                  ).astimezone(ZoneInfo("Asia/Kolkata")).date()
+              except ValueError:
+                  continue
+
+              if published_date == india_today:
+                  chosen = entry
+                  break
+
+          if chosen is None:
+              print(
+                  "No article published today in India time. "
+                  "Skipping Facebook post."
+              )
               sys.exit(0)
 
-          entry = entries[0]
-          title = entry.get("title", {}).get("$t", "").strip()
-
-          content_obj = (
-              entry.get("summary")
-              or entry.get("content")
+          title = chosen.get("title", {}).get("$t", "").strip()
+          summary = (
+              chosen.get("summary")
+              or chosen.get("content")
               or {}
-          )
-          raw_description = content_obj.get("$t", "")
+          ).get("$t", "")
+
           description = html.unescape(
-              re.sub(r"<[^>]+>", " ", raw_description)
+              re.sub(r"<[^>]+>", " ", summary)
           )
           description = re.sub(r"\s+", " ", description).strip()
 
-          url = ""
-          for link in entry.get("link", []):
+          article_url = ""
+          for link in chosen.get("link", []):
               if link.get("rel") == "alternate":
-                  url = link.get("href", "")
+                  article_url = link.get("href", "")
                   break
 
-          if not title or not url:
-              raise SystemExit(
-                  "Latest article is missing its title or URL."
-              )
+          if not title or not article_url:
+              raise SystemExit("Article title or URL is missing.")
 
-          if not url.startswith(
+          if not article_url.startswith(
               "https://smarttechguide365.blogspot.com/"
           ):
-              raise SystemExit("Unexpected article URL; refusing to post.")
+              raise SystemExit("Unexpected article URL. Stopping.")
 
-          description = description[:300]
           message = (
               title + "\n\n"
-              + description + "\n\n"
-              + "Read the full article:\n" + url
+              + description[:300] + "\n\n"
+              + "Read the full article:\n" + article_url
           )
-
-          page_id = os.environ["FB_PAGE_ID"]
-          token = os.environ["FB_PAGE_ACCESS_TOKEN"]
 
           api_url = (
               "https://graph.facebook.com/v21.0/"
-              + urllib.parse.quote(page_id, safe="")
+              + urllib.parse.quote(os.environ["FB_PAGE_ID"], safe="")
               + "/feed"
           )
 
-          body = urllib.parse.urlencode({
+          form_data = urllib.parse.urlencode({
               "message": message,
-              "link": url,
-              "access_token": token
+              "link": article_url,
+              "access_token": os.environ["FB_PAGE_ACCESS_TOKEN"]
           }).encode("utf-8")
 
-          req = urllib.request.Request(
+          request = urllib.request.Request(
               api_url,
-              data=body,
+              data=form_data,
               headers={
                   "Content-Type": "application/x-www-form-urlencoded"
               },
@@ -131,26 +150,23 @@ jobs:
           )
 
           try:
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  result = json.loads(
-                      response.read().decode("utf-8")
-                  )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  result = json.loads(response.read().decode("utf-8"))
           except urllib.error.HTTPError as exc:
               details = exc.read().decode(
                   "utf-8", errors="replace"
               )
               print("Facebook API error:", exc.code, details[:1500])
-              raise SystemExit("Facebook article posting failed.")
+              raise SystemExit("Facebook posting failed.")
 
           if not result.get("id"):
               raise SystemExit(
-                  "Facebook did not return a post ID: "
+                  "Facebook returned no post ID: "
                   + json.dumps(result)[:1000]
               )
 
-          print("Facebook article post successful.")
-          print("Article title:", title)
-          print("Article URL:", url)
-          print("Facebook post ID:", result["id"])
+          print("Facebook post successful.")
+          print("Title:", title)
+          print("Article URL:", article_url)
+          print("Post ID:", result["id"])
           PY
-          
