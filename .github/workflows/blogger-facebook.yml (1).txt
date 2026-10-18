@@ -1,0 +1,172 @@
+
+name: Blogger Article to Facebook
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "40 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blogger-facebook-post
+  cancel-in-progress: false
+
+jobs:
+  share-article:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+      FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+
+    steps:
+      - name: Validate Facebook configuration
+        run: |
+          test -n "$FB_PAGE_ID" || {
+            echo "FB_PAGE_ID secret missing."
+            exit 1
+          }
+          test -n "$FB_PAGE_ACCESS_TOKEN" || {
+            echo "FB_PAGE_ACCESS_TOKEN secret missing."
+            exit 1
+          }
+
+      - name: Share today's Blogger article
+        env:
+          BLOG_URL: https://smarttechguide365.blogspot.com/
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import urllib.request
+          import urllib.parse
+          import urllib.error
+          import datetime
+          import re
+          import html
+          import sys
+          from zoneinfo import ZoneInfo
+
+          blog_url = os.environ["BLOG_URL"].rstrip("/")
+          feed_url = (
+              blog_url
+              + "/feeds/posts/default?alt=json&max-results=10"
+          )
+
+          def get_json(url):
+              req = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "SmartTechGuide365/1.0"}
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          feed = get_json(feed_url)
+          entries = feed.get("feed", {}).get("entry", [])
+
+          india_today = datetime.datetime.now(
+              ZoneInfo("Asia/Kolkata")
+          ).date()
+
+          chosen = None
+
+          for entry in entries:
+              published = entry.get("published", {}).get("$t", "")
+              if not published:
+                  continue
+
+              try:
+                  published_date = datetime.datetime.fromisoformat(
+                      published.replace("Z", "+00:00")
+                  ).astimezone(ZoneInfo("Asia/Kolkata")).date()
+              except ValueError:
+                  continue
+
+              if published_date == india_today:
+                  chosen = entry
+                  break
+
+          if chosen is None:
+              print(
+                  "No article published today in India time. "
+                  "Skipping Facebook post."
+              )
+              sys.exit(0)
+
+          title = chosen.get("title", {}).get("$t", "").strip()
+          summary = (
+              chosen.get("summary")
+              or chosen.get("content")
+              or {}
+          ).get("$t", "")
+
+          description = html.unescape(
+              re.sub(r"<[^>]+>", " ", summary)
+          )
+          description = re.sub(r"\s+", " ", description).strip()
+
+          article_url = ""
+          for link in chosen.get("link", []):
+              if link.get("rel") == "alternate":
+                  article_url = link.get("href", "")
+                  break
+
+          if not title or not article_url:
+              raise SystemExit("Article title or URL is missing.")
+
+          if not article_url.startswith(
+              "https://smarttechguide365.blogspot.com/"
+          ):
+              raise SystemExit("Unexpected article URL. Stopping.")
+
+          message = (
+              title + "\n\n"
+              + description[:300] + "\n\n"
+              + "Read the full article:\n" + article_url
+          )
+
+          api_url = (
+              "https://graph.facebook.com/v21.0/"
+              + urllib.parse.quote(os.environ["FB_PAGE_ID"], safe="")
+              + "/feed"
+          )
+
+          form_data = urllib.parse.urlencode({
+              "message": message,
+              "link": article_url,
+              "access_token": os.environ["FB_PAGE_ACCESS_TOKEN"]
+          }).encode("utf-8")
+
+          request = urllib.request.Request(
+              api_url,
+              data=form_data,
+              headers={
+                  "Content-Type": "application/x-www-form-urlencoded"
+              },
+              method="POST"
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  result = json.loads(response.read().decode("utf-8"))
+          except urllib.error.HTTPError as exc:
+              details = exc.read().decode(
+                  "utf-8", errors="replace"
+              )
+              print("Facebook API error:", exc.code, details[:1500])
+              raise SystemExit("Facebook posting failed.")
+
+          if not result.get("id"):
+              raise SystemExit(
+                  "Facebook returned no post ID: "
+                  + json.dumps(result)[:1000]
+              )
+
+          print("Facebook post successful.")
+          print("Title:", title)
+          print("Article URL:", article_url)
+          print("Post ID:", result["id"])
+          PY
