@@ -1,0 +1,156 @@
+
+name: Blogger Article to Facebook
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "40 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blogger-facebook-post
+  cancel-in-progress: false
+
+jobs:
+  share-article:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+      FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+
+    steps:
+      - name: Validate Facebook configuration
+        run: |
+          test -n "$FB_PAGE_ID" || {
+            echo "FB_PAGE_ID secret missing."
+            exit 1
+          }
+          test -n "$FB_PAGE_ACCESS_TOKEN" || {
+            echo "FB_PAGE_ACCESS_TOKEN secret missing."
+            exit 1
+          }
+
+      - name: Find latest Blogger article and post to Facebook
+        env:
+          BLOG_URL: https://smarttechguide365.blogspot.com/
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import urllib.request
+          import urllib.parse
+          import urllib.error
+          import xml.etree.ElementTree as ET
+          import html
+          import re
+          import sys
+
+          feed_url = (
+              os.environ["BLOG_URL"].rstrip("/")
+              + "/feeds/posts/default?alt=json&max-results=5"
+          )
+
+          def get_json(url):
+              req = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "SmartTechGuide365/1.0"}
+              )
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.loads(r.read().decode("utf-8"))
+
+          feed = get_json(feed_url)
+          entries = feed.get("feed", {}).get("entry", [])
+
+          if not entries:
+              print("No published Blogger articles found. Skipping.")
+              sys.exit(0)
+
+          entry = entries[0]
+          title = entry.get("title", {}).get("$t", "").strip()
+
+          content_obj = (
+              entry.get("summary")
+              or entry.get("content")
+              or {}
+          )
+          raw_description = content_obj.get("$t", "")
+          description = html.unescape(
+              re.sub(r"<[^>]+>", " ", raw_description)
+          )
+          description = re.sub(r"\s+", " ", description).strip()
+
+          url = ""
+          for link in entry.get("link", []):
+              if link.get("rel") == "alternate":
+                  url = link.get("href", "")
+                  break
+
+          if not title or not url:
+              raise SystemExit(
+                  "Latest article is missing its title or URL."
+              )
+
+          if not url.startswith(
+              "https://smarttechguide365.blogspot.com/"
+          ):
+              raise SystemExit("Unexpected article URL; refusing to post.")
+
+          description = description[:300]
+          message = (
+              title + "\n\n"
+              + description + "\n\n"
+              + "Read the full article:\n" + url
+          )
+
+          page_id = os.environ["FB_PAGE_ID"]
+          token = os.environ["FB_PAGE_ACCESS_TOKEN"]
+
+          api_url = (
+              "https://graph.facebook.com/v21.0/"
+              + urllib.parse.quote(page_id, safe="")
+              + "/feed"
+          )
+
+          body = urllib.parse.urlencode({
+              "message": message,
+              "link": url,
+              "access_token": token
+          }).encode("utf-8")
+
+          req = urllib.request.Request(
+              api_url,
+              data=body,
+              headers={
+                  "Content-Type": "application/x-www-form-urlencoded"
+              },
+              method="POST"
+          )
+
+          try:
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  result = json.loads(
+                      response.read().decode("utf-8")
+                  )
+          except urllib.error.HTTPError as exc:
+              details = exc.read().decode(
+                  "utf-8", errors="replace"
+              )
+              print("Facebook API error:", exc.code, details[:1500])
+              raise SystemExit("Facebook article posting failed.")
+
+          if not result.get("id"):
+              raise SystemExit(
+                  "Facebook did not return a post ID: "
+                  + json.dumps(result)[:1000]
+              )
+
+          print("Facebook article post successful.")
+          print("Article title:", title)
+          print("Article URL:", url)
+          print("Facebook post ID:", result["id"])
+          PY
+          
