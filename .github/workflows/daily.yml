@@ -18,6 +18,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 🔴 NAYA STEP: Purani files delete karne ke liye (Same video na aaye)
+      - name: Clean old files
+        run: rm -rf output
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -522,3 +526,27 @@ jobs:
 
           print("Both videos uploaded as public.")
           PY
+
+      # ==========================================
+      # 🔴 NAYA STEP: FACEBOOK PAR VIDEO UPLOAD
+      # ==========================================
+      - name: Upload to Facebook Page
+        env:
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+        run: |
+          # Facebook par long video upload karenge
+          VIDEO="output/youtube_long.mp4"
+          
+          if [ -f "$VIDEO" ]; then
+            echo "Facebook par upload ho raha hai: $VIDEO"
+            curl -X POST "https://graph.facebook.com/v21.0/${FB_PAGE_ID}/videos" \
+              -F "source=@$VIDEO" \
+              -F "description=New Video from my Auto Channel! #AutoTech #Science" \
+              -F "access_token=${FB_PAGE_ACCESS_TOKEN}" \
+              --fail-with-body
+            echo "Facebook upload successful!"
+          else
+            echo "Error: Long video file nahi mili."
+            exit 1
+          fi
